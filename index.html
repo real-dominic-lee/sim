@@ -5,25 +5,32 @@
     <title>Fluid & Granular Engine</title>
     <style>
         body { margin: 0; overflow: hidden; font-family: monospace; background: #fff; }
-        canvas { display: block; image-rendering: pixelated; }
-        .ui-container { position: absolute; top: 5px; z-index: 10; font-size: 12px; display: flex; align-items: center; gap: 5px; }
-        #ui-left { left: 5px; }
-        #ui-right { right: 5px; flex-direction: column; align-items: flex-end; }
-        #stats { display: none; margin-top: 5px; }
+        canvas { display: block; image-rendering: pixelated; touch-action: none; }
+        #ui-left { position: absolute; top: 5px; left: 5px; z-index: 10; font-size: 12px; display: flex; gap: 8px; align-items: center; }
+        #ui-right { position: absolute; top: 5px; right: 5px; z-index: 10; font-size: 12px; text-align: right; }
+        #stats { display: none; text-align: right; white-space: pre; line-height: 1.4; margin-top: 2px; }
     </style>
 </head>
 <body>
     <canvas id="simCanvas"></canvas>
     
-    <div id="ui-left" class="ui-container">
+    <div id="ui-left">
         <input type="checkbox" id="sandChk" checked> Sand <input type="range" id="sandSizeSlider" min="0" max="200" value="100">
         <input type="checkbox" id="waterChk"> Water <input type="range" id="waterSizeSlider" min="0" max="200" value="100">
         <button id="clearBtn">Clear All</button>
     </div>
     
-    <div id="ui-right" class="ui-container">
-        <div>stuff <input type="checkbox" id="stuffChk"></div>
-        <div id="stats">FPS: 0 | TPS: 0 | Active: 0</div>
+    <div id="ui-right">
+        <label><input type="checkbox" id="stuffChk"> stuff</label>
+        <div id="stats">FPS: 0
+TPS: 0
+Active: 0
+Sand: 0
+Water: 0
+Wet Sand: 0
+Total: 0
+Empty: 0
+Grid: 0x0</div>
     </div>
 
     <script>
@@ -47,9 +54,10 @@
             wake(i) { 
                 const W=this.W, H=this.H, g=this.grid; 
                 let x=i%W, y=(i/W)|0; 
-                if(y>0){ if(x>0 && g[i-W-1]) this.addA(i-W-1); if(g[i-W]) this.addA(i-W); if(x<W-1 && g[i-W+1]) this.addA(i-W+1); } 
-                if(x>0 && g[i-1]) this.addA(i-1); if(x<W-1 && g[i+1]) this.addA(i+1);
-                if(y<H-1){ if(x>0 && g[i+W-1]) this.addA(i+W-1); if(g[i+W]) this.addA(i+W); if(x<W-1 && g[i+W+1]) this.addA(i+W+1); } 
+                if(y>0) this.addA(i-W); 
+                if(y<H-1) this.addA(i+W);
+                if(x>0) this.addA(i-1); 
+                if(x<W-1) this.addA(i+1);
             }
             paint(x, y, s, paints) { this.paintQ.push({x, y, s, paints}); }
             applyPaints() { 
@@ -142,13 +150,16 @@
                             cx = tCx; cy++; cIdx = dIdx; moved = true;
                             return true;
                         }
+                        // Bump walking restricted to slow-moving particles to prevent mid-air grid lock
                         if (t !== MAT.WATER && sType === MAT.EMPTY && dType === t) {
-                            if (Math.abs(finalVx) > 0.1 || Math.abs(finalVy) > 1.0) {
-                                g[sIdx] = t; g[cIdx] = MAT.EMPTY;
-                                vx[sIdx] = dir * speed * 0.5; vy[sIdx] = -0.2; 
-                                u[sIdx] = 1; u[cIdx] = 1; this.addA(sIdx); this.addA(cIdx); this.wake(cIdx);
-                                cx = tCx; cIdx = sIdx; moved = true;
-                                return true;
+                            if (Math.abs(finalVy) < 1.5) {
+                                if (Math.abs(finalVx) > 0.1 || Math.random() < 0.05) {
+                                    g[sIdx] = t; g[cIdx] = MAT.EMPTY;
+                                    vx[sIdx] = dir * speed * 0.5; vy[sIdx] = -0.2; 
+                                    u[sIdx] = 1; u[cIdx] = 1; this.addA(sIdx); this.addA(cIdx); this.wake(cIdx);
+                                    cx = tCx; cIdx = sIdx; moved = true;
+                                    return true;
+                                }
                             }
                         }
                     }
@@ -220,7 +231,6 @@
                                     u[nIdx] = 1; this.addA(nIdx);
                                     
                                     finalVy = -vyc * 0.1;
-                                    finalVx += (Math.random() - 0.5) * vyc * 0.5;
                                     
                                     let sDir = finalVx > 0.1 ? 1 : (finalVx < -0.1 ? -1 : (Math.random() < 0.5 ? 1 : -1));
                                     tryDiag(sDir, 3.0);
@@ -234,9 +244,10 @@
                             u[cIdx]=1; u[nIdx]=1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return; 
                         }
                     } else if (nt === MAT.WATER && t === MAT.WATER) {
-                        vx[nIdx] = (vx[nIdx] + finalVx) * 0.85; 
-                        vy[nIdx] = (vy[nIdx] + finalVy) * 0.85;
-                        finalVx *= 0.15; finalVy *= 0.15; 
+                        vx[nIdx] = (vx[nIdx] + finalVx) * 0.5; 
+                        vy[nIdx] = (vy[nIdx] + finalVy) * 0.5;
+                        finalVx = vx[nIdx] * 0.8; 
+                        finalVy = vy[nIdx] * 0.8;
                         vx[cIdx] = finalVx; vy[cIdx] = finalVy;
                         u[nIdx] = 1; u[cIdx] = 1; this.addA(nIdx); this.addA(cIdx); break;
                     } else {
@@ -365,40 +376,20 @@
                                     }
                                 }
 
-                                if (Math.random() < 0.1 && touchingWetSand) {
-                                    let max_r = 25, max_r2 = max_r * max_r;
-                                    let d1=999999, dx1=0, dy1=0, d2=999999, dx2=0, dy2=0, d3=999999, dx3=0, dy3=0;
-                                    for(let dy=-max_r; dy<=max_r; dy++) {
+                                if (touchingWetSand && Math.random() < 0.05) {
+                                    for(let dy=-2; dy<=2; dy++) {
                                         let ny = cy + dy; if(ny<0||ny>=H) continue;
-                                        for(let dx=-max_r; dx<=max_r; dx++) {
+                                        for(let dx=-2; dx<=2; dx++) {
                                             if(dx===0 && dy===0) continue;
-                                            let dist2 = dx*dx + dy*dy;
-                                            if(dist2 <= max_r2) {
-                                                let nx = cx + dx; if(nx<0||nx>=W) continue;
-                                                if (g[ny * W + nx] === MAT.SAND) {
-                                                    if (dist2 < d1) { d3=d2; dx3=dx2; dy3=dy2; d2=d1; dx2=dx1; dy2=dy1; d1=dist2; dx1=dx; dy1=dy; }
-                                                    else if (dist2 < d2) { d3=d2; dx3=dx2; dy3=dy2; d2=dist2; dx2=dx; dy2=dy; }
-                                                    else if (dist2 < d3) { d3=dist2; dx3=dx; dy3=dy; }
+                                            let nx = cx + dx; if(nx<0||nx>=W) continue;
+                                            let nIdx = ny * W + nx;
+                                            if (g[nIdx] === MAT.SAND) {
+                                                let dist2 = dx*dx + dy*dy;
+                                                if (Math.random() < 441.0 / (400.0 + dist2)) {
+                                                    g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx]=0; vy[cIdx]=0; 
+                                                    u[cIdx]=1; u[nIdx]=1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
                                                 }
                                             }
-                                        }
-                                    }
-                                    let cands = [[d1, dx1, dy1], [d2, dx2, dy2], [d3, dx3, dy3]];
-                                    for(let c=0; c<3; c++) {
-                                        if (cands[c][0] === 999999) continue;
-                                        let dx = cands[c][1], dy = cands[c][2], dist2 = cands[c][0], dist = Math.sqrt(dist2);
-                                        let nx = cx + dx, ny = cy + dy, nIdx = ny * W + nx;
-                                        let valid = true, empties = 0, drySands = 0, invDist = 1.0 / dist;
-                                        for(let j=1; j<dist; j++) {
-                                            let tx = cx + Math.round(dx * j * invDist), ty = cy + Math.round(dy * j * invDist);
-                                            let tType = g[ty * W + tx];
-                                            if (tType === MAT.EMPTY) { if (++empties > 5) { valid = false; break; } }
-                                            else if (tType === MAT.SAND) { if (++drySands > 3) { valid = false; break; } }
-                                            else if (tType !== MAT.WET_SAND && tType !== MAT.WATER) { valid = false; break; }
-                                        }
-                                        if (valid && Math.random() < Math.min(1.0, 441.0 / (400.0 + dist2))) {
-                                            g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx]=0; vy[cIdx]=0; 
-                                            u[cIdx]=1; u[nIdx]=1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
                                         }
                                     }
                                 }
@@ -459,7 +450,14 @@
             let now = performance.now(); if(lastT===0){lastT=now;lastTps=now;} let d=now-lastT; lastT=now; acc+=d;
             let t=0; while(acc>=TMS && t<2){ engine.update(); acc-=TMS; t++; tpsC++; } if(acc>TMS*2) acc=0;
             if(now-lastTps>=1000){ cTps=tpsC; tpsC=0; lastTps=now; }
-            if(aR){ new Uint8Array(aR).set(engine.grid); self.postMessage({type:'render', buf:aR, aC:engine.actC, tps:cTps}, [aR]); aR=null; }
+            if(aR){
+                new Uint8Array(aR).set(engine.grid);
+                let counts = [0, 0, 0, 0];
+                let g = engine.grid;
+                for (let i = 0; i < g.length; i++) counts[g[i]]++;
+                self.postMessage({type:'render', buf:aR, aC:engine.actC, tps:cTps, counts: counts}, [aR]);
+                aR=null;
+            }
             setTimeout(tick, 0);
         }
         self.onmessage = e => {
@@ -474,10 +472,12 @@
         const canvas = document.getElementById('simCanvas');
         const statsDiv = document.getElementById('stats');
         const stuffChk = document.getElementById('stuffChk');
-        let gl, prog, tex, vao, worker = null, sS = 100, wS = 100, mDown = false, lastX = 0, lastY = 0, aC = 0, cTps = 0, fpsL = performance.now(), fpsF = 0, pend = null;
+        let gl, prog, tex, vao, worker = null, sS = 100, wS = 100, mDown = false, lastX = 0, lastY = 0, aC = 0, cTps = 0, counts = [0,0,0,0], fpsL = performance.now(), fpsF = 0, pend = null;
 
         function setupEvents() {
-            canvas.addEventListener('pointerdown', e => { mDown = true; canvas.setPointerCapture(e.pointerId); lastX = e.clientX; lastY = e.clientY; });
+            canvas.addEventListener('pointerdown', e => { 
+                mDown = true; canvas.setPointerCapture(e.pointerId); lastX = e.clientX; lastY = e.clientY; 
+            });
             canvas.addEventListener('pointermove', e => { if (mDown) { lastX = e.clientX; lastY = e.clientY; } });
             ['pointerup', 'pointercancel'].forEach(ev => canvas.addEventListener(ev, () => mDown = false));
             window.addEventListener('blur', () => mDown = false);
@@ -486,9 +486,9 @@
             document.getElementById('sandSizeSlider').oninput = e => sS = +e.target.value;
             document.getElementById('waterSizeSlider').oninput = e => wS = +e.target.value;
             
-            stuffChk.checked = false;
-            statsDiv.style.display = 'none';
-            stuffChk.onchange = () => statsDiv.style.display = stuffChk.checked ? 'block' : 'none';
+            stuffChk.onchange = function() {
+                statsDiv.style.display = this.checked ? 'block' : 'none';
+            };
         }
 
         function initGL() {
@@ -498,6 +498,7 @@
             gl.compileShader(vs);
             
             const fs = gl.createShader(gl.FRAGMENT_SHADER); 
+            // VISUAL FILL INS COMMENTED OUT AS REQUESTED
             gl.shaderSource(fs, `#version 300 es
                 precision highp float;
                 in vec2 v_uv;
@@ -515,6 +516,8 @@
                 void main() {
                     uint id = texture(u_grid, v_uv).r;
                     if (id != 0u) { c = getCol(id); return; }
+                    
+                    /* COMMENTED OUT VISUAL FILL
                     vec2[8] dirs = vec2[8](
                         vec2(1.0, 0.0), vec2(0.9239, 0.3827), vec2(0.7071, 0.7071), vec2(0.3827, 0.9239),
                         vec2(0.0, 1.0), vec2(-0.3827, 0.9239), vec2(-0.7071, 0.7071), vec2(-0.9239, 0.3827)
@@ -537,6 +540,7 @@
                             }
                         }
                     }
+                    */
                     c = vec4(1.0, 1.0, 1.0, 1.0);
                 }`); 
             gl.compileShader(fs);
@@ -556,7 +560,14 @@
 
         function initWorker() {
             worker = new Worker(URL.createObjectURL(new Blob([workerCode], { type: 'application/javascript' })));
-            worker.onmessage = e => { if (e.data.type === 'render') { pend = e.data.buf; aC = e.data.aC; cTps = e.data.tps; } };
+            worker.onmessage = e => { 
+                if (e.data.type === 'render') { 
+                    pend = e.data.buf; 
+                    aC = e.data.aC; 
+                    cTps = e.data.tps; 
+                    counts = e.data.counts; 
+                } 
+            };
             worker.postMessage({ type: 'init', w: canvas.width, h: canvas.height });
         }
 
@@ -586,7 +597,13 @@
             if (!stuffChk.checked) return;
             let n = performance.now(), f = (fpsF * 1000) / (n - fpsL); 
             fpsL = n; fpsF = 0; 
-            if (!statsDiv.innerText.includes("Error")) statsDiv.innerText = `FPS: ${f.toFixed(0)} | TPS: ${cTps} | Active: ${aC}`; 
+            let sandC = counts[1] || 0;
+            let waterC = counts[2] || 0;
+            let wetC = counts[3] || 0;
+            let totalC = sandC + waterC + wetC;
+            let totalCells = canvas.width * canvas.height;
+            let emptyC = totalCells - totalC;
+            statsDiv.innerText = `FPS: ${f.toFixed(0)}\nTPS: ${cTps}\nActive: ${aC}\nSand: ${sandC}\nWater: ${waterC}\nWet Sand: ${wetC}\nTotal: ${totalC}\nEmpty: ${emptyC}\nGrid: ${canvas.width}x${canvas.height}`;
         }, 500);
 
         function init() {
