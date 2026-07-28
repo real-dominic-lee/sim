@@ -52,29 +52,32 @@ Grid: 0x0</div>
             clear() { this.grid.fill(0); this.vx.fill(0); this.vy.fill(0); this.ep.fill(0); this.epc = this.actC = this.nxtC = 0; this.paintQ.length = 0; }
             addA(i) { if (this.ep[i] !== this.epc && this.nxtC < this.maxA) { this.ep[i] = this.epc; this.nxtL[this.nxtC++] = i; } }
             wake(i) { 
-                const W=this.W, H=this.H, g=this.grid; 
+                const W=this.W, H=this.H; 
                 let x=i%W, y=(i/W)|0; 
-                // Restored 8-neighbor wake for smooth liquid pressure
-                if(y>0){ if(x>0 && g[i-W-1]) this.addA(i-W-1); if(g[i-W]) this.addA(i-W); if(x<W-1 && g[i-W+1]) this.addA(i-W+1); } 
-                if(x>0 && g[i-1]) this.addA(i-1); if(x<W-1 && g[i+1]) this.addA(i+1);
-                if(y<H-1){ if(x>0 && g[i+W-1]) this.addA(i+W-1); if(g[i+W]) this.addA(i+W); if(x<W-1 && g[i+W+1]) this.addA(i+W+1); } 
+                // Strengthened 8-neighbor wake: no bounds checking, just wake everything around it
+                if(y>0){ if(x>0) this.addA(i-W-1); this.addA(i-W); if(x<W-1) this.addA(i-W+1); } 
+                if(x>0) this.addA(i-1); if(x<W-1) this.addA(i+1);
+                if(y<H-1){ if(x>0) this.addA(i+W-1); this.addA(i+W); if(x<W-1) this.addA(i+W+1); } 
             }
-            paint(x, y, s, paints) { this.paintQ.push({x, y, s, paints}); }
+            paint(x, y, items) { this.paintQ.push({x, y, items}); }
             applyPaints() { 
                 for (let p of this.paintQ) { 
-                    let r = Math.ceil(Math.sqrt(p.s)), spawned = 0;
-                    for(let dy = -r; dy <= r && spawned < p.s; dy++) {
-                        for(let dx = -r; dx <= r && spawned < p.s; dx++) {
-                            let nx = p.x + dx, ny = p.y + dy;
-                            if(nx >= 0 && nx < this.W && ny >= 0 && ny < this.H) {
-                                let idx = ny * this.W + nx;
-                                if(this.grid[idx] === MAT.EMPTY) {
-                                    let mat = p.paints[Math.random() * p.paints.length | 0];
-                                    this.grid[idx] = mat;
-                                    let angle = Math.random() * Math.PI * 2, f = (mat === MAT.SAND) ? 3 + Math.random() * 2 : 2 + Math.random() * 1.5; 
-                                    this.vx[idx] = Math.cos(angle) * f; this.vy[idx] = Math.sin(angle) * f;
-                                    spawned++; this.addA(idx); this.wake(idx); 
-                                } 
+                    // FIX: Spawn exact amounts for each material individually
+                    for (let item of p.items) {
+                        let mat = item.mat, s = item.size;
+                        let r = Math.ceil(Math.sqrt(s)), spawned = 0;
+                        for(let dy = -r; dy <= r && spawned < s; dy++) {
+                            for(let dx = -r; dx <= r && spawned < s; dx++) {
+                                let nx = p.x + dx, ny = p.y + dy;
+                                if(nx >= 0 && nx < this.W && ny >= 0 && ny < this.H) {
+                                    let idx = ny * this.W + nx;
+                                    if(this.grid[idx] === MAT.EMPTY) {
+                                        this.grid[idx] = mat;
+                                        let angle = Math.random() * Math.PI * 2, f = (mat === MAT.SAND) ? 3 + Math.random() * 2 : 2 + Math.random() * 1.5; 
+                                        this.vx[idx] = Math.cos(angle) * f; this.vy[idx] = Math.sin(angle) * f;
+                                        spawned++; this.addA(idx); this.wake(idx); 
+                                    } 
+                                }
                             }
                         }
                     }
@@ -241,7 +244,6 @@ Grid: 0x0</div>
                             u[cIdx]=1; u[nIdx]=1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return; 
                         }
                     } else if (nt === MAT.WATER && t === MAT.WATER) {
-                        // FIX: Removed jitter. Smooth momentum transfer fixes air pocket bugs.
                         vx[nIdx] = (vx[nIdx] + finalVx) * 0.75; 
                         vy[nIdx] = (vy[nIdx] + finalVy) * 0.75;
                         finalVx *= 0.25; finalVy *= 0.25; 
@@ -373,19 +375,21 @@ Grid: 0x0</div>
                                     }
                                 }
 
-                                if (touchingWetSand && Math.random() < 0.05) {
-                                    for(let dy=-2; dy<=2; dy++) {
-                                        let ny = cy + dy; if(ny<0||ny>=H) continue;
-                                        for(let dx=-2; dx<=2; dx++) {
-                                            if(dx===0 && dy===0) continue;
-                                            let nx = cx + dx; if(nx<0||nx>=W) continue;
+                                // DEEP SOAK: Linear downward raycast (No sqrt, no lag, soaks deep)
+                                if (touchingWetSand && Math.random() < 0.2) {
+                                    let dirs = [0, -1, 1]; // Straight down, down-left, down-right
+                                    for (let i = 0; i < 3; i++) {
+                                        let dir = dirs[i];
+                                        for (let r = 1; r <= 15; r++) {
+                                            let nx = cx + dir * r;
+                                            let ny = cy + r;
+                                            if (nx < 0 || nx >= W || ny < 0 || ny >= H) break;
                                             let nIdx = ny * W + nx;
                                             if (g[nIdx] === MAT.SAND) {
-                                                let dist2 = dx*dx + dy*dy;
-                                                if (Math.random() < 441.0 / (400.0 + dist2)) {
-                                                    g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx]=0; vy[cIdx]=0; 
-                                                    u[cIdx]=1; u[nIdx]=1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
-                                                }
+                                                g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx]=0; vy[cIdx]=0; 
+                                                u[cIdx]=1; u[nIdx]=1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
+                                            } else if (g[nIdx] !== MAT.WET_SAND && g[nIdx] !== MAT.WATER) {
+                                                break; // Blocked by something else
                                             }
                                         }
                                     }
@@ -460,7 +464,7 @@ Grid: 0x0</div>
         self.onmessage = e => {
             const d = e.data;
             if(d.type==='init'){ engine=new PhysicsEngine(d.w,d.h); rA=new ArrayBuffer(d.w*d.h); rB=new ArrayBuffer(d.w*d.h); aR=rA; lastT=0; lastTps=0; tpsC=0; tick(); }
-            else if(d.type==='paint'){ engine.paint(d.x, d.y, d.size, d.paints); }
+            else if(d.type==='paint'){ engine.paint(d.x, d.y, d.items); }
             else if(d.type==='clear'){ engine.clear(); }
             else if(d.type==='buffer'){ if(!aR) aR=d.buf; }
         };
@@ -495,7 +499,6 @@ Grid: 0x0</div>
             gl.compileShader(vs);
             
             const fs = gl.createShader(gl.FRAGMENT_SHADER); 
-            // RESTORED VISUAL FILL: 2px straight bar for water, 1px for sand
             gl.shaderSource(fs, `#version 300 es
                 precision highp float;
                 in vec2 v_uv;
@@ -585,10 +588,10 @@ Grid: 0x0</div>
         function paint(cx, cy) {
             if (!worker) return; const r = canvas.getBoundingClientRect();
             const x = Math.floor((cx - r.left) * (canvas.width / r.width)), y = Math.floor((cy - r.top) * (canvas.height / r.height));
-            let paints = [], size = 0;
-            if (document.getElementById('sandChk').checked) { paints.push(1); size = Math.max(size, sS); }
-            if (document.getElementById('waterChk').checked) { paints.push(2); size = Math.max(size, wS); }
-            if (paints.length > 0) worker.postMessage({ type: 'paint', x, y, size, paints });
+            let items = [];
+            if (document.getElementById('sandChk').checked) items.push({mat: 1, size: sS});
+            if (document.getElementById('waterChk').checked) items.push({mat: 2, size: wS});
+            if (items.length > 0) worker.postMessage({ type: 'paint', x, y, items: items });
         }
 
         setInterval(() => { 
