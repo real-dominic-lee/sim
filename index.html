@@ -304,7 +304,29 @@ Grid: 0x0</div>
                             };
                             let d = Math.random() < 0.5 ? 1 : -1; 
                             if (!tryDensitySlide(d)) tryDensitySlide(-d);
-                            
+
+                            // AVALANCHE ROLLING: Breaks 45-degree triangles into smooth, rounded domes
+                            if (!rMoved && cy + 1 < H && g[cIdx + W] === t && Math.abs(vx[cIdx]) < 0.5) {
+                                const tryRoll = (dir) => {
+                                    let hIdx = cIdx + dir;
+                                    if (cx + dir < 0 || cx + dir >= W) return false;
+                                    let dIdx = hIdx + W;
+                                    // If horizontal is empty, but diagonal below is blocked by same material (it's a 45-degree slope)
+                                    if (g[hIdx] === MAT.EMPTY && g[dIdx] === t) {
+                                        if (Math.random() < 0.2) { // 20% chance to roll over the bump
+                                            g[hIdx] = t; g[cIdx] = MAT.EMPTY;
+                                            vx[hIdx] = dir * 2.5; vy[hIdx] = -0.2;
+                                            u[hIdx] = 1; u[cIdx] = 1; this.addA(hIdx); this.wake(cIdx);
+                                            cIdx = hIdx; cx += dir; rMoved = true;
+                                            return true;
+                                        }
+                                    }
+                                    return false;
+                                };
+                                let rollD = Math.random() < 0.5 ? 1 : -1;
+                                if (!tryRoll(rollD)) tryRoll(-rollD);
+                            }
+
                             if (!rMoved && cy + 1 < H && g[cIdx + W] === t) {
                                 if (Math.abs(vx[cIdx]) < 0.1 && Math.random() < 0.02) {
                                     let rollDir = (Math.random() < 0.5) ? 1 : -1;
@@ -364,15 +386,16 @@ Grid: 0x0</div>
                                     }
                                 }
 
-                                // RANDOM WALK PATHFINDING SOAK: Actively hunts through wet sand for dry sand
+                                // RANDOM WALK PATHFINDING SOAK: 3x max distance (180), Cubic curve falloff
                                 if (touchingWetSand && Math.random() < 0.35) {
+                                    let max_steps = 180; 
                                     let wx = cx, wy = cy;
-                                    for (let s = 0; s < 15; s++) {
+                                    for (let s = 1; s <= max_steps; s++) {
                                         let r = Math.random();
                                         let dx = 0, dy = 0;
-                                        if (r < 0.6) dy = 1;       // 60% chance down (gravity bias)
-                                        else if (r < 0.8) dx = 1;  // 20% right
-                                        else dx = -1;              // 20% left
+                                        if (r < 0.7) dy = 1;       // 70% chance down (heavy gravity bias for depth)
+                                        else if (r < 0.85) dx = 1; // 15% right
+                                        else dx = -1;              // 15% left
                                         
                                         let nx = wx + dx, ny = wy + dy;
                                         if (nx < 0 || nx >= W || ny < 0 || ny >= H) break;
@@ -381,9 +404,18 @@ Grid: 0x0</div>
                                         if (g[nIdx] === MAT.WET_SAND) {
                                             wx = nx; wy = ny; // Continue pathfinding
                                         } else if (g[nIdx] === MAT.SAND) {
-                                            // Found dry sand! Soak it.
-                                            g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx]=0; vy[cIdx]=0; 
-                                            u[cIdx]=1; u[nIdx]=1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
+                                            // Found dry sand! Calculate cubic soak chance (100% at s=1, ~12.5% at halfway, 0% at 180)
+                                            let progress = (s - 1) / (max_steps - 1);
+                                            let soakChance = Math.pow(1.0 - progress, 3);
+                                            
+                                            if (Math.random() < soakChance) {
+                                                // Soak it!
+                                                g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx]=0; vy[cIdx]=0; 
+                                                u[cIdx]=1; u[nIdx]=1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
+                                            } else {
+                                                // Failed the distance roll, stop the walk.
+                                                break;
+                                            }
                                         } else {
                                             break; // Hit air, water, or wall. Stop walk.
                                         }
