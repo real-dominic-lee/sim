@@ -48,16 +48,31 @@ Grid: 0x0</div>
                 this.nxtL = new Int32Array(this.maxA);
                 this.ep = new Uint32Array(w * h);
                 this.epc = 0; this.actC = 0; this.nxtC = 0; this.paintQ = [];
+                this._state = { t: 0, cx: 0, cy: 0, cIdx: 0, moved: false, finalVx: 0, finalVy: 0 };
             }
             clear() { this.grid.fill(0); this.vx.fill(0); this.vy.fill(0); this.ep.fill(0); this.epc = this.actC = this.nxtC = 0; this.paintQ.length = 0; }
             addA(i) { if (this.ep[i] !== this.epc && this.nxtC < this.maxA) { this.ep[i] = this.epc; this.nxtL[this.nxtC++] = i; } }
+            
             wake(i) { 
-                const W=this.W, H=this.H, g=this.grid; 
+                const W=this.W, H=this.H, ep=this.ep, epc=this.epc, nxtL=this.nxtL, maxA=this.maxA;
+                let nc = this.nxtC;
                 let x=i%W, y=(i/W)|0; 
-                if(y>0){ if(x>0) this.addA(i-W-1); this.addA(i-W); if(x<W-1) this.addA(i-W+1); } 
-                if(x>0) this.addA(i-1); if(x<W-1) this.addA(i+1);
-                if(y<H-1){ if(x>0) this.addA(i+W-1); this.addA(i+W); if(x<W-1) this.addA(i+W+1); } 
+                
+                if(y>0){ 
+                    if(x>0) { let idx=i-W-1; if (ep[idx] !== epc && nc < maxA) { ep[idx] = epc; nxtL[nc++] = idx; } }
+                    { let idx=i-W; if (ep[idx] !== epc && nc < maxA) { ep[idx] = epc; nxtL[nc++] = idx; } }
+                    if(x<W-1) { let idx=i-W+1; if (ep[idx] !== epc && nc < maxA) { ep[idx] = epc; nxtL[nc++] = idx; } }
+                } 
+                if(x>0) { let idx=i-1; if (ep[idx] !== epc && nc < maxA) { ep[idx] = epc; nxtL[nc++] = idx; } }
+                if(x<W-1) { let idx=i+1; if (ep[idx] !== epc && nc < maxA) { ep[idx] = epc; nxtL[nc++] = idx; } }
+                if(y<H-1){ 
+                    if(x>0) { let idx=i+W-1; if (ep[idx] !== epc && nc < maxA) { ep[idx] = epc; nxtL[nc++] = idx; } }
+                    { let idx=i+W; if (ep[idx] !== epc && nc < maxA) { ep[idx] = epc; nxtL[nc++] = idx; } }
+                    if(x<W-1) { let idx=i+W+1; if (ep[idx] !== epc && nc < maxA) { ep[idx] = epc; nxtL[nc++] = idx; } }
+                } 
+                this.nxtC = nc;
             }
+            
             paint(x, y, items) { this.paintQ.push({x, y, items}); }
             applyPaints() { 
                 for (let p of this.paintQ) { 
@@ -88,6 +103,83 @@ Grid: 0x0</div>
                 for(let i=0; i<this.actC; i++) this.upd[this.actL[i]] = 0;
                 for(let i=0; i<this.actC; i++) { let idx=this.actL[i]; if(!this.upd[idx]) this.proc(idx, 0); }
             }
+
+            tryDiag(dir, speed, state) {
+                const W=this.W, H=this.H, g=this.grid, vx=this.vx, vy=this.vy, u=this.upd;
+                let cx = state.cx, cy = state.cy, cIdx = state.cIdx, t = state.t;
+                let tCx = cx + dir;
+                if (tCx >= 0 && tCx < W && cy + 1 < H) {
+                    let sIdx = cy * W + tCx, dIdx = sIdx + W;
+                    let sType = g[sIdx], dType = g[dIdx];
+                    let canSide = (sType === MAT.EMPTY) || (sType === MAT.WATER && MAT.DENSITY[t] > MAT.DENSITY[MAT.WATER]);
+                    let canDown = (dType === MAT.EMPTY) || (dType === MAT.WATER && MAT.DENSITY[t] > MAT.DENSITY[MAT.WATER]);
+                    if (canSide && canDown) {
+                        if (t === MAT.SAND && dType === MAT.WATER) {
+                            g[dIdx] = MAT.WET_SAND; g[cIdx] = MAT.EMPTY; vx[cIdx]=0; vy[cIdx]=0;
+                        } else {
+                            g[dIdx] = t; 
+                            if (dType === MAT.WATER) {
+                                g[cIdx] = MAT.WATER; vy[cIdx] = -1.5; 
+                            } else {
+                                g[cIdx] = MAT.EMPTY; vx[cIdx]=0; vy[cIdx]=0;
+                            }
+                            vx[dIdx] = dir * speed; vy[dIdx] = 0;
+                        }
+                        u[dIdx] = 1; u[cIdx] = 1; this.addA(dIdx); this.addA(cIdx); this.wake(cIdx);
+                        state.cx = tCx; state.cy = cy + 1; state.cIdx = dIdx; state.moved = true;
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            tryDensitySlide(dir, state) {
+                const W=this.W, H=this.H, g=this.grid, vx=this.vx, vy=this.vy, u=this.upd;
+                let cx = state.cx, cy = state.cy, cIdx = state.cIdx, t = state.t;
+                let tCx = cx + dir;
+                if (tCx >= 0 && tCx < W && cy + 1 < H) {
+                    let sIdx = cy * W + tCx, dIdx = sIdx + W;
+                    let sType = g[sIdx], dType = g[dIdx];
+                    let canSide = (sType === MAT.EMPTY) || (sType === MAT.WATER && MAT.DENSITY[t] > MAT.DENSITY[MAT.WATER]);
+                    let canDown = (dType === MAT.EMPTY) || (dType === MAT.WATER && MAT.DENSITY[t] > MAT.DENSITY[MAT.WATER]);
+                    if (canSide && canDown) {
+                        if (t === MAT.SAND && dType === MAT.WATER) {
+                            g[dIdx] = MAT.WET_SAND; g[cIdx] = MAT.EMPTY; vx[cIdx]=0; vy[cIdx]=0;
+                        } else {
+                            g[dIdx] = t; 
+                            if (dType === MAT.WATER) {
+                                g[cIdx] = MAT.WATER; vy[cIdx] = -1.5; 
+                            } else {
+                                g[cIdx] = MAT.EMPTY; vx[cIdx]=0; vy[cIdx]=0;
+                            }
+                            vy[dIdx] = 0; vx[dIdx] = dir * 1.5;
+                        }
+                        u[dIdx] = 1; u[cIdx] = 1; this.addA(dIdx); this.addA(cIdx); this.wake(cIdx);
+                        state.cx = tCx; state.cy = cy + 1; state.cIdx = dIdx; state.moved = true;
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            tryRoll(dir, state) {
+                const W=this.W, H=this.H, g=this.grid, vx=this.vx, vy=this.vy, u=this.upd;
+                let cx = state.cx, cy = state.cy, cIdx = state.cIdx, t = state.t;
+                let hIdx = cIdx + dir;
+                if (cx + dir < 0 || cx + dir >= W) return false;
+                let dIdx = hIdx + W;
+                if (g[hIdx] === MAT.EMPTY && g[dIdx] === t) {
+                    if (Math.random() < 0.2) { 
+                        g[hIdx] = t; g[cIdx] = MAT.EMPTY;
+                        vx[hIdx] = dir * 2.5; vy[hIdx] = -0.2;
+                        u[hIdx] = 1; u[cIdx] = 1; this.addA(hIdx); this.wake(cIdx);
+                        state.cIdx = hIdx; state.cx = cx + dir; state.moved = true;
+                        return true;
+                    }
+                }
+                return false;
+            }
+
             proc(idx, depth) {
                 const W=this.W, H=this.H, g=this.grid, vx=this.vx, vy=this.vy, u=this.upd;
                 let x=idx%W, y=(idx/W)|0, t=g[idx];
@@ -102,63 +194,54 @@ Grid: 0x0</div>
                     }
                     let soakChance = 0.05 + pressure * 0.05;
                     if (Math.random() < soakChance) {
-                        const offsets = [W, -1, 1, -W], bounds = [y+1<H, x>0, x<W-1, y>0];
-                        for(let i=0; i<4; i++) {
-                            if (bounds[i] && g[idx+offsets[i]] === MAT.SAND) {
-                                let nIdx = idx+offsets[i];
-                                g[idx]=MAT.EMPTY; g[nIdx]=MAT.WET_SAND; vx[idx]=0; vy[idx]=0;
-                                u[idx]=1; u[nIdx]=1; this.addA(idx); this.addA(nIdx); this.wake(idx); this.wake(nIdx);
-                                return;
-                            }
+                        if (y+1<H && g[idx+W] === MAT.SAND) {
+                            let nIdx = idx+W;
+                            g[idx]=MAT.EMPTY; g[nIdx]=MAT.WET_SAND; vx[idx]=0; vy[idx]=0;
+                            u[idx]=1; u[nIdx]=1; this.addA(idx); this.addA(nIdx); this.wake(idx); this.wake(nIdx); return;
+                        }
+                        if (x>0 && g[idx-1] === MAT.SAND) {
+                            let nIdx = idx-1;
+                            g[idx]=MAT.EMPTY; g[nIdx]=MAT.WET_SAND; vx[idx]=0; vy[idx]=0;
+                            u[idx]=1; u[nIdx]=1; this.addA(idx); this.addA(nIdx); this.wake(idx); this.wake(nIdx); return;
+                        }
+                        if (x<W-1 && g[idx+1] === MAT.SAND) {
+                            let nIdx = idx+1;
+                            g[idx]=MAT.EMPTY; g[nIdx]=MAT.WET_SAND; vx[idx]=0; vy[idx]=0;
+                            u[idx]=1; u[nIdx]=1; this.addA(idx); this.addA(nIdx); this.wake(idx); this.wake(nIdx); return;
+                        }
+                        if (y>0 && g[idx-W] === MAT.SAND) {
+                            let nIdx = idx-W;
+                            g[idx]=MAT.EMPTY; g[nIdx]=MAT.WET_SAND; vx[idx]=0; vy[idx]=0;
+                            u[idx]=1; u[nIdx]=1; this.addA(idx); this.addA(nIdx); this.wake(idx); this.wake(nIdx); return;
                         }
                     }
                 }
 
-                let vxc = isNaN(vx[idx]) ? 0 : vx[idx];
-                let vyc = isNaN(vy[idx]) ? 0 : vy[idx];
+                let vxc = vx[idx]; if (vxc !== vxc) vxc = 0;
+                let vyc = vy[idx]; if (vyc !== vyc) vyc = 0;
                 vyc += 1.2; 
                 
                 if ((y + 1 >= H || g[idx + W] !== MAT.EMPTY)) {
                     vxc *= (t===MAT.WATER) ? 0.975 : MAT.FRICTION[t];
-                    if (Math.abs(vxc) < 0.1) vxc = 0;
+                    let avx = vxc < 0 ? -vxc : vxc;
+                    if (avx < 0.1) vxc = 0;
                 }
                 
-                let stepsToProcess = Math.min(Math.max(Math.abs(vxc), Math.abs(vyc)) | 0, 30);
+                let avx = vxc < 0 ? -vxc : vxc;
+                let avy = vyc < 0 ? -vyc : vyc;
+                let maxV = avx > avy ? avx : avy;
+                let stepsToProcess = maxV | 0;
+                if (stepsToProcess > 30) stepsToProcess = 30;
+
                 let stepsTakenX = 0, stepsTakenY = 0;
                 let cx=x, cy=y, cIdx=idx, moved=false;
                 let finalVx = vxc, finalVy = vyc;
+                let s = this._state;
                 
-                const tryDiag = (dir, speed) => {
-                    let tCx = cx + dir;
-                    if (tCx >= 0 && tCx < W && cy + 1 < H) {
-                        let sIdx = cy * W + tCx, dIdx = sIdx + W;
-                        let sType = g[sIdx], dType = g[dIdx];
-                        let canSide = (sType === MAT.EMPTY) || (sType === MAT.WATER && MAT.DENSITY[t] > MAT.DENSITY[MAT.WATER]);
-                        let canDown = (dType === MAT.EMPTY) || (dType === MAT.WATER && MAT.DENSITY[t] > MAT.DENSITY[MAT.WATER]);
-                        if (canSide && canDown) {
-                            if (t === MAT.SAND && dType === MAT.WATER) {
-                                g[dIdx] = MAT.WET_SAND; g[cIdx] = MAT.EMPTY; vx[cIdx]=0; vy[cIdx]=0;
-                            } else {
-                                g[dIdx] = t; 
-                                if (dType === MAT.WATER) {
-                                    g[cIdx] = MAT.WATER; vy[cIdx] = -1.5; 
-                                } else {
-                                    g[cIdx] = MAT.EMPTY; vx[cIdx]=0; vy[cIdx]=0;
-                                }
-                                vx[dIdx] = dir * speed; vy[dIdx] = 0;
-                            }
-                            u[dIdx] = 1; u[cIdx] = 1; this.addA(dIdx); this.addA(cIdx); this.wake(cIdx);
-                            cx = tCx; cy++; cIdx = dIdx; moved = true;
-                            return true;
-                        }
-                    }
-                    return false;
-                };
-
                 for(let i=0; i<stepsToProcess; i++) {
                     let sx=0, sy=0;
-                    if(Math.abs(vxc) > stepsTakenX) { sx=Math.sign(vxc); stepsTakenX++; }
-                    if(Math.abs(vyc) > stepsTakenY) { sy=Math.sign(vyc); stepsTakenY++; }
+                    if(avx > stepsTakenX) { sx=vxc < 0 ? -1 : 1; stepsTakenX++; }
+                    if(avy > stepsTakenY) { sy=vyc < 0 ? -1 : 1; stepsTakenY++; }
                     if(sx===0 && sy===0) break;
                     
                     let nx=cx+sx, ny=cy+sy;
@@ -190,12 +273,16 @@ Grid: 0x0</div>
                                 vx[nIdx] += finalVx * 0.5; vy[nIdx] += finalVy * 0.5; 
                                 u[nIdx] = 1; this.addA(nIdx); this.proc(nIdx, depth + 1); 
                                 if (g[nIdx] !== MAT.EMPTY) {
+                                    s.t = t; s.cx = cx; s.cy = cy; s.cIdx = cIdx; s.moved = moved;
                                     let sDir = finalVx > 0.1 ? 1 : (finalVx < -0.1 ? -1 : (Math.random() < 0.5 ? 1 : -1));
-                                    if (!tryDiag(sDir, 1.5)) { finalVx = 0; finalVy = 0; break; }
+                                    if (!this.tryDiag(sDir, 1.5, s)) { finalVx = 0; finalVy = 0; break; }
+                                    else { cx = s.cx; cy = s.cy; cIdx = s.cIdx; moved = s.moved; }
                                 } else { finalVx *= 0.5; finalVy *= 0.5; }
                             } else {
+                                s.t = t; s.cx = cx; s.cy = cy; s.cIdx = cIdx; s.moved = moved;
                                 let sDir = finalVx > 0.1 ? 1 : (finalVx < -0.1 ? -1 : (Math.random() < 0.5 ? 1 : -1));
-                                if (!tryDiag(sDir, 1.5)) { finalVx = 0; finalVy = 0; break; }
+                                if (!this.tryDiag(sDir, 1.5, s)) { finalVx = 0; finalVy = 0; break; }
+                                else { cx = s.cx; cy = s.cy; cIdx = s.cIdx; moved = s.moved; }
                             }
                         } else {
                             if (sy > 0) {
@@ -221,8 +308,10 @@ Grid: 0x0</div>
                                     
                                     finalVy = -vyc * 0.1;
                                     
+                                    s.t = t; s.cx = cx; s.cy = cy; s.cIdx = cIdx; s.moved = moved;
                                     let sDir = finalVx > 0.1 ? 1 : (finalVx < -0.1 ? -1 : (Math.random() < 0.5 ? 1 : -1));
-                                    tryDiag(sDir, 3.0);
+                                    this.tryDiag(sDir, 3.0, s);
+                                    if (s.moved) { cx = s.cx; cy = s.cy; cIdx = s.cIdx; moved = true; }
                                 }
                                 break;
                             } else { finalVx *= -0.1; finalVy *= -0.1; break; }
@@ -256,8 +345,10 @@ Grid: 0x0</div>
                                 }
                                 if (vyc > 6.0 && pressure > 3 && Math.random() < 0.2) finalVy = -vyc * 0.3; 
                             } else {
+                                s.t = t; s.cx = cx; s.cy = cy; s.cIdx = cIdx; s.moved = moved;
                                 let sDir = finalVx > 0.1 ? 1 : (finalVx < -0.1 ? -1 : (Math.random() < 0.5 ? 1 : -1));
-                                tryDiag(sDir, 3.0);
+                                this.tryDiag(sDir, 3.0, s);
+                                if (s.moved) { cx = s.cx; cy = s.cy; cIdx = s.cIdx; moved = true; }
                             }
                             break; 
                         } else { finalVx *= -0.1; finalVy *= -0.1; break; }
@@ -276,55 +367,17 @@ Grid: 0x0</div>
                             u[bIdx] = 1; u[cIdx] = 1; this.addA(bIdx); this.wake(cIdx); cIdx = bIdx; cy++; rMoved = true; 
                         }
                         if (!rMoved) {
-                            const tryDensitySlide = (dir) => {
-                                let tCx = cx + dir;
-                                if (tCx >= 0 && tCx < W && cy + 1 < H) {
-                                    let sIdx = cy * W + tCx, dIdx = sIdx + W;
-                                    let sType = g[sIdx], dType = g[dIdx];
-                                    let canSide = (sType === MAT.EMPTY) || (sType === MAT.WATER && MAT.DENSITY[t] > MAT.DENSITY[MAT.WATER]);
-                                    let canDown = (dType === MAT.EMPTY) || (dType === MAT.WATER && MAT.DENSITY[t] > MAT.DENSITY[MAT.WATER]);
-                                    
-                                    if (canSide && canDown) {
-                                        if (t === MAT.SAND && dType === MAT.WATER) {
-                                            g[dIdx] = MAT.WET_SAND; g[cIdx] = MAT.EMPTY; vx[cIdx]=0; vy[cIdx]=0;
-                                        } else {
-                                            g[dIdx] = t; 
-                                            if (dType === MAT.WATER) {
-                                                g[cIdx] = MAT.WATER; vy[cIdx] = -1.5; 
-                                            } else {
-                                                g[cIdx] = MAT.EMPTY; vx[cIdx]=0; vy[cIdx]=0;
-                                            }
-                                            vy[dIdx] = 0; vx[dIdx] = dir * 1.5;
-                                        }
-                                        u[dIdx] = 1; u[cIdx] = 1; this.addA(dIdx); this.addA(cIdx); this.wake(cIdx);
-                                        cx = tCx; cy++; cIdx = dIdx; rMoved = true; return true;
-                                    }
-                                }
-                                return false;
-                            };
+                            s.t = t; s.cx = cx; s.cy = cy; s.cIdx = cIdx; s.moved = rMoved;
                             let d = Math.random() < 0.5 ? 1 : -1; 
-                            if (!tryDensitySlide(d)) tryDensitySlide(-d);
+                            if (!this.tryDensitySlide(d, s)) this.tryDensitySlide(-d, s);
+                            if (s.moved) { cx = s.cx; cy = s.cy; cIdx = s.cIdx; rMoved = true; }
 
                             // AVALANCHE ROLLING: Breaks 45-degree triangles into smooth, rounded domes
                             if (!rMoved && cy + 1 < H && g[cIdx + W] === t && Math.abs(vx[cIdx]) < 0.5) {
-                                const tryRoll = (dir) => {
-                                    let hIdx = cIdx + dir;
-                                    if (cx + dir < 0 || cx + dir >= W) return false;
-                                    let dIdx = hIdx + W;
-                                    // If horizontal is empty, but diagonal below is blocked by same material (it's a 45-degree slope)
-                                    if (g[hIdx] === MAT.EMPTY && g[dIdx] === t) {
-                                        if (Math.random() < 0.2) { // 20% chance to roll over the bump
-                                            g[hIdx] = t; g[cIdx] = MAT.EMPTY;
-                                            vx[hIdx] = dir * 2.5; vy[hIdx] = -0.2;
-                                            u[hIdx] = 1; u[cIdx] = 1; this.addA(hIdx); this.wake(cIdx);
-                                            cIdx = hIdx; cx += dir; rMoved = true;
-                                            return true;
-                                        }
-                                    }
-                                    return false;
-                                };
+                                s.t = t; s.cx = cx; s.cy = cy; s.cIdx = cIdx; s.moved = rMoved;
                                 let rollD = Math.random() < 0.5 ? 1 : -1;
-                                if (!tryRoll(rollD)) tryRoll(-rollD);
+                                if (!this.tryRoll(rollD, s)) this.tryRoll(-rollD, s);
+                                if (s.moved) { cx = s.cx; cy = s.cy; cIdx = s.cIdx; rMoved = true; }
                             }
 
                             if (!rMoved && cy + 1 < H && g[cIdx + W] === t) {
@@ -369,20 +422,26 @@ Grid: 0x0</div>
                             u[bIdx] = 1; u[cIdx] = 1; this.addA(bIdx); this.wake(cIdx); cIdx = bIdx; cy++; rMoved = true; 
                         }
                         if (!rMoved) {
+                            s.t = t; s.cx = cx; s.cy = cy; s.cIdx = cIdx; s.moved = rMoved;
                             let d = Math.random() < 0.5 ? 1 : -1; 
-                            if (!tryDiag(d, 4.0) && !tryDiag(-d, 4.0)) {
+                            if (!this.tryDiag(d, 4.0, s) && !this.tryDiag(-d, 4.0, s)) {
                                 let touchingSand = (cy + 1 < H && g[cIdx + W] === MAT.SAND) || (cy > 0 && g[cIdx - W] === MAT.SAND) || (cx > 0 && g[cIdx - 1] === MAT.SAND) || (cx < W - 1 && g[cIdx + 1] === MAT.SAND);
                                 let touchingWetSand = (cy + 1 < H && g[cIdx + W] === MAT.WET_SAND) || (cy > 0 && g[cIdx - W] === MAT.WET_SAND) || (cx > 0 && g[cIdx - 1] === MAT.WET_SAND) || (cx < W - 1 && g[cIdx + 1] === MAT.WET_SAND);
                                 
+                                if (s.moved) { cx = s.cx; cy = s.cy; cIdx = s.cIdx; rMoved = true; }
+
                                 if (Math.random() < 0.1 && touchingSand) {
-                                    const dirs = [[0, 1], [1, 0], [-1, 0], [0, -1]];
-                                    for(let i=0; i<4; i++) {
-                                        let nx = cx + dirs[i][0], ny = cy + dirs[i][1];
-                                        if(nx >= 0 && nx < W && ny >= 0 && ny < H && g[ny * W + nx] === MAT.SAND) {
-                                            let nIdx = ny * W + nx;
-                                            g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx]=0; vy[cIdx]=0; 
-                                            u[cIdx]=1; u[nIdx]=1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return; 
-                                        }
+                                    if (cy+1<H && g[cIdx+W] === MAT.SAND) {
+                                        let nIdx = cIdx+W; g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx]=0; vy[cIdx]=0; u[cIdx]=1; u[nIdx]=1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return; 
+                                    }
+                                    if (cx+1<W && g[cIdx+1] === MAT.SAND) {
+                                        let nIdx = cIdx+1; g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx]=0; vy[cIdx]=0; u[cIdx]=1; u[nIdx]=1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return; 
+                                    }
+                                    if (cx>0 && g[cIdx-1] === MAT.SAND) {
+                                        let nIdx = cIdx-1; g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx]=0; vy[cIdx]=0; u[cIdx]=1; u[nIdx]=1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return; 
+                                    }
+                                    if (cy>0 && g[cIdx-W] === MAT.SAND) {
+                                        let nIdx = cIdx-W; g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx]=0; vy[cIdx]=0; u[cIdx]=1; u[nIdx]=1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return; 
                                     }
                                 }
 
@@ -460,6 +519,8 @@ Grid: 0x0</div>
                                     this.addA(cIdx); 
                                     return;
                                 }
+                            } else {
+                                if (s.moved) { cx = s.cx; cy = s.cy; cIdx = s.cIdx; rMoved = true; }
                             }
                         }
                     }
@@ -473,34 +534,38 @@ Grid: 0x0</div>
                 this.addA(cIdx);
             }
         }
-        let engine, rA, rB, aR, lastT=0, acc=0, tpsC=0, lastTps=0, cTps=0; const TPS=60, TMS=1000/TPS; 
+        let engine, rA, rB, aR, aRView = null, lastT=0, acc=0, tpsC=0, lastTps=0, cTps=0; const TPS=60, TMS=1000/TPS; 
+        let counts = new Int32Array(4);
         function tick() {
             let now = performance.now(); if(lastT===0){lastT=now;lastTps=now;} let d=now-lastT; lastT=now; acc+=d;
             let t=0; while(acc>=TMS && t<2){ engine.update(); acc-=TMS; t++; tpsC++; } if(acc>TMS*2) acc=0;
             if(now-lastTps>=1000){ cTps=tpsC; tpsC=0; lastTps=now; }
-            if(aR){
-                new Uint8Array(aR).set(engine.grid);
-                let counts = [0, 0, 0, 0];
+            if(aRView){
+                aRView.set(engine.grid);
+                counts.fill(0);
                 let g = engine.grid;
-                for (let i = 0; i < g.length; i++) counts[g[i]]++;
+                let len = g.length;
+                for (let i = 0; i < len; i++) counts[g[i]]++;
                 self.postMessage({type:'render', buf:aR, aC:engine.actC, tps:cTps, counts: counts}, [aR]);
-                aR=null;
+                aR=null; aRView=null;
             }
             setTimeout(tick, 0);
         }
         self.onmessage = e => {
             const d = e.data;
-            if(d.type==='init'){ engine=new PhysicsEngine(d.w,d.h); rA=new ArrayBuffer(d.w*d.h); rB=new ArrayBuffer(d.w*d.h); aR=rA; lastT=0; lastTps=0; tpsC=0; tick(); }
+            if(d.type==='init'){ engine=new PhysicsEngine(d.w,d.h); rA=new ArrayBuffer(d.w*d.h); rB=new ArrayBuffer(d.w*d.h); aR=rA; aRView=new Uint8Array(aR); lastT=0; lastTps=0; tpsC=0; tick(); }
             else if(d.type==='paint'){ engine.paint(d.x, d.y, d.items); }
             else if(d.type==='clear'){ engine.clear(); }
-            else if(d.type==='buffer'){ if(!aR) aR=d.buf; }
+            else if(d.type==='buffer'){ if(!aR) { aR=d.buf; aRView=new Uint8Array(aR); } }
         };
         `;
 
         const canvas = document.getElementById('simCanvas');
         const statsDiv = document.getElementById('stats');
         const stuffChk = document.getElementById('stuffChk');
-        let gl, prog, tex, vao, worker = null, sS = 100, wS = 100, mDown = false, lastX = 0, lastY = 0, aC = 0, cTps = 0, counts = [0,0,0,0], fpsL = performance.now(), fpsF = 0, pend = null;
+        const sandChkEl = document.getElementById('sandChk');
+        const waterChkEl = document.getElementById('waterChk');
+        let gl, prog, tex, vao, worker = null, sS = 100, wS = 100, mDown = false, lastX = 0, lastY = 0, aC = 0, cTps = 0, counts = [0,0,0,0], fpsL = performance.now(), fpsF = 0, pend = null, pendView = null;
 
         function setupEvents() {
             canvas.addEventListener('pointerdown', e => { 
@@ -530,6 +595,11 @@ Grid: 0x0</div>
                 uniform vec2 u_texelSize;
                 out vec4 c;
 
+                const vec2 dirs[8] = vec2[8](
+                    vec2(1.0, 0.0), vec2(0.7071, 0.7071), vec2(0.0, 1.0), vec2(-0.7071, 0.7071),
+                    vec2(-1.0, 0.0), vec2(-0.7071, -0.7071), vec2(0.0, -1.0), vec2(0.7071, -0.7071)
+                );
+
                 vec4 getCol(uint id) {
                     if(id==1u) return vec4(0.76, 0.69, 0.5, 1.0);    // Sand
                     if(id==2u) return vec4(0.35, 0.7, 1.0, 1.0);     // Water
@@ -541,10 +611,6 @@ Grid: 0x0</div>
                     uint id = texture(u_grid, v_uv).r;
                     if (id != 0u) { c = getCol(id); return; }
                     
-                    vec2[8] dirs = vec2[8](
-                        vec2(1.0, 0.0), vec2(0.7071, 0.7071), vec2(0.0, 1.0), vec2(-0.7071, 0.7071),
-                        vec2(-1.0, 0.0), vec2(-0.7071, -0.7071), vec2(0.0, -1.0), vec2(0.7071, -0.7071)
-                    );
                     for(int d=0; d<8; d++) {
                         vec2 dir = dirs[d] * u_texelSize;
                         uint first = 0u; int dist1 = 0;
@@ -587,6 +653,7 @@ Grid: 0x0</div>
             worker.onmessage = e => { 
                 if (e.data.type === 'render') { 
                     pend = e.data.buf; 
+                    pendView = new Uint8Array(pend);
                     aC = e.data.aC; 
                     cTps = e.data.tps; 
                     counts = e.data.counts; 
@@ -599,11 +666,11 @@ Grid: 0x0</div>
             if (mDown) paint(lastX, lastY);
             if (pend) {
                 try { 
-                    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, canvas.width, canvas.height, gl.RED_INTEGER, gl.UNSIGNED_BYTE, new Uint8Array(pend)); 
+                    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, canvas.width, canvas.height, gl.RED_INTEGER, gl.UNSIGNED_BYTE, pendView); 
                     gl.drawArrays(gl.TRIANGLES, 0, 3); 
                 } catch (e) {}
                 if (worker) worker.postMessage({ type: 'buffer', buf: pend }, [pend]);
-                pend = null; fpsF++;
+                pend = null; pendView = null; fpsF++;
             }
             requestAnimationFrame(rLoop);
         }
@@ -612,8 +679,8 @@ Grid: 0x0</div>
             if (!worker) return; const r = canvas.getBoundingClientRect();
             const x = Math.floor((cx - r.left) * (canvas.width / r.width)), y = Math.floor((cy - r.top) * (canvas.height / r.height));
             let items = [];
-            if (document.getElementById('sandChk').checked) items.push({mat: 1, size: sS});
-            if (document.getElementById('waterChk').checked) items.push({mat: 2, size: wS});
+            if (sandChkEl.checked) items.push({mat: 1, size: sS});
+            if (waterChkEl.checked) items.push({mat: 2, size: wS});
             if (items.length > 0) worker.postMessage({ type: 'paint', x, y, items: items });
         }
 
