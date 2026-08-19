@@ -5,7 +5,7 @@
     <title>Fluid/Granular Engine</title>
     <style>
         body { margin: 0; overflow: hidden; font-family: monospace; background: #fff; }
-        canvas { display: block; image-rendering: pixelated; touch-action: none; }
+        canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; touch-action: none; }
         #ui-left { position: absolute; top: 5px; left: 5px; z-index: 10; font-size: 12px; display: flex; gap: 8px; align-items: center; }
         #ui-right { position: absolute; top: 5px; right: 5px; z-index: 10; font-size: 12px; text-align: right; }
         #stats { display: none; text-align: right; white-space: pre; line-height: 1.4; margin-top: 2px; }
@@ -23,8 +23,11 @@
     <div id="ui-right">
         <label><input type="checkbox" id="stuffChk" onclick="document.getElementById('stats').style.display = this.checked ? 'block' : 'none';"> stuff</label>
         <div id="stats">FPS: 0
+Frame: 0ms
 TPS: 0
 Active: 0
+Up: 0 rows
+Renderer: ?
 Sand: 0
 Water: 0
 Wet Sand: 0
@@ -119,9 +122,16 @@ Grid: 0x0</div>
                 this.nxtL = new Int32Array(this.maxA);
                 this.ep = new Uint32Array(w * h);
                 this.epc = 0; this.actC = 0; this.nxtC = 0; this.paintQ = [];
+                // Dirty row span: rows [dMin, dMax] changed since last render send
+                this.dMin = h; this.dMax = -1;
             }
-            clear() { this.grid.fill(0); this.vx.fill(0); this.vy.fill(0); this.ep.fill(0); this.epc = this.actC = this.nxtC = 0; this.paintQ.length = 0; }
-            addA(i) { if (this.ep[i] !== this.epc && this.nxtC < this.maxA) { this.ep[i] = this.epc; this.nxtL[this.nxtC++] = i; } }
+            clear() { this.grid.fill(0); this.vx.fill(0); this.vy.fill(0); this.ep.fill(0); this.epc = this.actC = this.nxtC = 0; this.paintQ.length = 0; this.dMin = 0; this.dMax = this.H - 1; }
+            addA(i) { 
+                let y = (i / this.W) | 0;
+                if (y < this.dMin) this.dMin = y;
+                if (y > this.dMax) this.dMax = y;
+                if (this.ep[i] !== this.epc && this.nxtC < this.maxA) { this.ep[i] = this.epc; this.nxtL[this.nxtC++] = i; } 
+            }
             
             wake(i) { 
                 const W=this.W, H=this.H, ep=this.ep, epc=this.epc, nxtL=this.nxtL, maxA=this.maxA;
@@ -182,8 +192,11 @@ Grid: 0x0</div>
             update() {
                 let tL=this.actL; this.actL=this.nxtL; this.nxtL=tL;
                 this.actC = this.nxtC; this.nxtC = 0; this.epc++; this.applyPaints();
-                let u = this.upd, actL = this.actL, actC = this.actC;
-                for(let i=0; i<actC; i++) u[actL[i]] = 0;
+                let u = this.upd, actL = this.actL, actC = this.actC, W = this.W, dMin = this.dMin, dMax = this.dMax;
+                // Processed cells' origin rows are dirty (they may have vacated)
+                for(let i=0; i<actC; i++) { let idx=actL[i]; u[idx] = 0; let y=(idx/W)|0; if(y<dMin)dMin=y; if(y>dMax)dMax=y; }
+                this.dMin = dMin; this.dMax = dMax;
+                // Mutated target cells get tracked inside addA()
                 for(let i=0; i<actC; i++) { let idx=actL[i]; if(!u[idx]) this.proc(idx, 0); }
             }
 
@@ -525,29 +538,37 @@ Grid: 0x0</div>
                 this.addA(cIdx);
             }
         }
-        let engine, rA, rB, aR, aRView = null, lastT=0, acc=0, tpsC=0, lastTps=0, cTps=0; const TPS=60, TMS=1000/TPS; 
+        let engine, lastT=0, acc=0, tpsC=0, lastTps=0, cTps=0, lastStats=0; const TPS=60, TMS=1000/TPS; 
         let counts = new Int32Array(4);
         function tick() {
             let now = performance.now(); if(lastT===0){lastT=now;lastTps=now;} let d=now-lastT; lastT=now; acc+=d;
             let t=0; while(acc>=TMS && t<2){ engine.update(); acc-=TMS; t++; tpsC++; } if(acc>TMS*2) acc=0;
             if(now-lastTps>=1000){ cTps=tpsC; tpsC=0; lastTps=now; }
-            if(aRView){
-                aRView.set(engine.grid);
+            if(now-lastStats>=500){
+                lastStats=now;
                 counts.fill(0);
-                let g = engine.grid;
-                let len = g.length;
-                for (let i = 0; i < len; i++) counts[g[i]]++;
-                self.postMessage({type:'render', buf:aR, aC:engine.actC, tps:cTps, counts: counts}, [aR]);
-                aR=null; aRView=null;
+                let g=engine.grid, len=g.length;
+                for(let i=0;i<len;i++) counts[g[i]]++;
+                self.postMessage({type:'stats', aC:engine.actC, tps:cTps, counts:counts});
+            }
+            // Send only the changed row span, in a fresh buffer. No round-trip needed.
+            if(engine.dMax >= engine.dMin && engine.dMax >= 0){
+                let W=engine.W, H=engine.H;
+                let y0 = engine.dMin < 0 ? 0 : engine.dMin;
+                let y1 = engine.dMax >= H ? H - 1 : engine.dMax;
+                let start = y0 * W, n = (y1 - y0 + 1) * W;
+                let out = new Uint8Array(n);
+                out.set(engine.grid.subarray(start, start + n));
+                self.postMessage({type:'render', buf: out.buffer, y0: y0, rows: y1 - y0 + 1}, [out.buffer]);
+                engine.dMin = H; engine.dMax = -1;
             }
             setTimeout(tick, 0);
         }
         self.onmessage = e => {
             const d = e.data;
-            if(d.type==='init'){ engine=new PhysicsEngine(d.w,d.h); rA=new ArrayBuffer(d.w*d.h); rB=new ArrayBuffer(d.w*d.h); aR=rA; aRView=new Uint8Array(aR); lastT=0; lastTps=0; tpsC=0; tick(); }
+            if(d.type==='init'){ engine=new PhysicsEngine(d.w,d.h); lastT=0; lastTps=0; lastStats=0; tpsC=0; tick(); }
             else if(d.type==='paint'){ engine.paint(d.x, d.y, d.items); }
             else if(d.type==='clear'){ engine.clear(); }
-            else if(d.type==='buffer'){ if(!aR) { aR=d.buf; aRView=new Uint8Array(aR); } }
         };
         `;
 
@@ -556,7 +577,7 @@ Grid: 0x0</div>
         const stuffChk = document.getElementById('stuffChk');
         const sandChkEl = document.getElementById('sandChk');
         const waterChkEl = document.getElementById('waterChk');
-        let gl, prog, tex, vao, worker = null, sS = 100, wS = 100, mDown = false, lastX = 0, lastY = 0, aC = 0, cTps = 0, counts = [0,0,0,0], fpsL = performance.now(), fpsF = 0, pend = null, pendView = null;
+        let gl, prog, tex, vao, traceLoc, pbo, worker = null, sS = 100, wS = 100, mDown = false, lastX = 0, lastY = 0, aC = 0, cTps = 0, counts = [0,0,0,0], fpsL = performance.now(), fpsF = 0, pend = null, pendView = null, pendY0 = 0, pendRows = 0, upRows = 0, cRect = null, ftEMA = 0, lastFT = 0, needDraw = true, lastTrace = -1;
 
         function setupEvents() {
             canvas.addEventListener('pointerdown', e => { 
@@ -566,6 +587,8 @@ Grid: 0x0</div>
             canvas.addEventListener('pointermove', e => { if (mDown) { lastX = e.clientX; lastY = e.clientY; } });
             ['pointerup', 'pointercancel'].forEach(ev => canvas.addEventListener(ev, () => mDown = false));
             window.addEventListener('blur', () => mDown = false);
+            // Coming back to the tab: the front buffer may be gone, redraw once.
+            document.addEventListener('visibilitychange', () => { if (!document.hidden) needDraw = true; });
             
             document.getElementById('clearBtn').onclick = () => worker && worker.postMessage({ type: 'clear' });
             document.getElementById('sandSizeSlider').oninput = e => sS = +e.target.value;
@@ -573,7 +596,10 @@ Grid: 0x0</div>
         }
 
         function initGL() {
-            gl = canvas.getContext('webgl2'); if (!gl) return false;
+            // alpha:false -> opaque canvas, skips per-frame compositing blend.
+            // powerPreference:'high-performance' -> forces the discrete GPU on hybrid laptops.
+            // desynchronized:true -> low-latency present path where supported.
+            gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false, powerPreference: 'high-performance', desynchronized: true }); if (!gl) return false;
             const vs = gl.createShader(gl.VERTEX_SHADER); 
             gl.shaderSource(vs, `#version 300 es\nin vec2 a_pos; out vec2 v_uv; void main(){ v_uv = a_pos*0.5+0.5; v_uv.y = 1.0-v_uv.y; gl_Position = vec4(a_pos, 0.0, 1.0); }`); 
             gl.compileShader(vs);
@@ -584,6 +610,7 @@ Grid: 0x0</div>
                 in vec2 v_uv;
                 uniform highp usampler2D u_grid;
                 uniform vec2 u_texelSize;
+                uniform int u_trace;
                 out vec4 c;
 
                 vec4 getCol(uint id) {
@@ -596,65 +623,66 @@ Grid: 0x0</div>
                 void main() {
                     uint id = texture(u_grid, v_uv).r;
                     if (id != 0u) { c = getCol(id); return; }
-                    
-                    // Optimized 4-direction trace for gap filling
-                    // Horizontal trace (left then right)
-                    bool foundL = false;
-                    for(int i=1; i<=4; i++) {
-                        uint t = texture(u_grid, v_uv - vec2(u_texelSize.x * float(i), 0.0)).r;
-                        if (t != 0u) { if (t == 2u) foundL = true; break; }
-                    }
-                    if (foundL) {
+                    if (u_trace == 1) {
+                        // Optimized 4-direction trace for gap filling
+                        // Horizontal trace (left then right)
+                        bool foundL = false;
                         for(int i=1; i<=4; i++) {
-                            uint t = texture(u_grid, v_uv + vec2(u_texelSize.x * float(i), 0.0)).r;
-                            if (t != 0u) { if (t == 2u) { c = getCol(2u); return; } break; }
+                            uint t = texture(u_grid, v_uv - vec2(u_texelSize.x * float(i), 0.0)).r;
+                            if (t != 0u) { if (t == 2u) foundL = true; break; }
                         }
-                    }
-                    
-                    // Vertical trace (down then up)
-                    bool foundD = false;
-                    for(int i=1; i<=4; i++) {
-                        uint t = texture(u_grid, v_uv + vec2(0.0, u_texelSize.y * float(i))).r;
-                        if (t != 0u) { if (t == 2u) foundD = true; break; }
-                    }
-                    if (foundD) {
+                        if (foundL) {
+                            for(int i=1; i<=4; i++) {
+                                uint t = texture(u_grid, v_uv + vec2(u_texelSize.x * float(i), 0.0)).r;
+                                if (t != 0u) { if (t == 2u) { c = getCol(2u); return; } break; }
+                            }
+                        }
+                        
+                        // Vertical trace (down then up)
+                        bool foundD = false;
                         for(int i=1; i<=4; i++) {
-                            uint t = texture(u_grid, v_uv - vec2(0.0, u_texelSize.y * float(i))).r;
-                            if (t != 0u) { if (t == 2u) { c = getCol(2u); return; } break; }
+                            uint t = texture(u_grid, v_uv + vec2(0.0, u_texelSize.y * float(i))).r;
+                            if (t != 0u) { if (t == 2u) foundD = true; break; }
                         }
-                    }
-                    
-                    // Diagonal trace (down-left then up-right)
-                    bool foundDL = false;
-                    for(int i=1; i<=3; i++) {
-                        uint t = texture(u_grid, v_uv + vec2(-u_texelSize.x * float(i), u_texelSize.y * float(i))).r;
-                        if (t != 0u) { if (t == 2u) foundDL = true; break; }
-                    }
-                    if (foundDL) {
+                        if (foundD) {
+                            for(int i=1; i<=4; i++) {
+                                uint t = texture(u_grid, v_uv - vec2(0.0, u_texelSize.y * float(i))).r;
+                                if (t != 0u) { if (t == 2u) { c = getCol(2u); return; } break; }
+                            }
+                        }
+                        
+                        // Diagonal trace (down-left then up-right)
+                        bool foundDL = false;
                         for(int i=1; i<=3; i++) {
-                            uint t = texture(u_grid, v_uv + vec2(u_texelSize.x * float(i), -u_texelSize.y * float(i))).r;
-                            if (t != 0u) { if (t == 2u) { c = getCol(2u); return; } break; }
+                            uint t = texture(u_grid, v_uv + vec2(-u_texelSize.x * float(i), u_texelSize.y * float(i))).r;
+                            if (t != 0u) { if (t == 2u) foundDL = true; break; }
                         }
-                    }
-                    
-                    // Diagonal trace (down-right then up-left)
-                    bool foundDR = false;
-                    for(int i=1; i<=3; i++) {
-                        uint t = texture(u_grid, v_uv + vec2(u_texelSize.x * float(i), u_texelSize.y * float(i))).r;
-                        if (t != 0u) { if (t == 2u) foundDR = true; break; }
-                    }
-                    if (foundDR) {
+                        if (foundDL) {
+                            for(int i=1; i<=3; i++) {
+                                uint t = texture(u_grid, v_uv + vec2(u_texelSize.x * float(i), -u_texelSize.y * float(i))).r;
+                                if (t != 0u) { if (t == 2u) { c = getCol(2u); return; } break; }
+                            }
+                        }
+                        
+                        // Diagonal trace (down-right then up-left)
+                        bool foundDR = false;
                         for(int i=1; i<=3; i++) {
-                            uint t = texture(u_grid, v_uv + vec2(-u_texelSize.x * float(i), -u_texelSize.y * float(i))).r;
-                            if (t != 0u) { if (t == 2u) { c = getCol(2u); return; } break; }
+                            uint t = texture(u_grid, v_uv + vec2(u_texelSize.x * float(i), u_texelSize.y * float(i))).r;
+                            if (t != 0u) { if (t == 2u) foundDR = true; break; }
+                        }
+                        if (foundDR) {
+                            for(int i=1; i<=3; i++) {
+                                uint t = texture(u_grid, v_uv + vec2(-u_texelSize.x * float(i), -u_texelSize.y * float(i))).r;
+                                if (t != 0u) { if (t == 2u) { c = getCol(2u); return; } break; }
+                            }
                         }
                     }
-
                     c = vec4(1.0, 1.0, 1.0, 1.0);
                 }`); 
             gl.compileShader(fs);
             
             prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog); gl.useProgram(prog);
+            traceLoc = gl.getUniformLocation(prog, "u_trace");
             vao = gl.createVertexArray(); gl.bindVertexArray(vao);
             const vbo = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vbo); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
             const pLoc = gl.getAttribLocation(prog, "a_pos"); gl.enableVertexAttribArray(pLoc); gl.vertexAttribPointer(pLoc, 2, gl.FLOAT, false, 0, 0);
@@ -664,6 +692,11 @@ Grid: 0x0</div>
             gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1); gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8UI, canvas.width, canvas.height, 0, gl.RED_INTEGER, gl.UNSIGNED_BYTE, new Uint8Array(canvas.width * canvas.height));
             gl.uniform1i(gl.getUniformLocation(prog, "u_grid"), 0); 
             gl.uniform2f(gl.getUniformLocation(prog, "u_texelSize"), 1.0 / canvas.width, 1.0 / canvas.height);
+            // Persistent PBO for async texture uploads (avoids CPU-memory upload sync stalls)
+            pbo = gl.createBuffer();
+            gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, pbo);
+            gl.bufferData(gl.PIXEL_UNPACK_BUFFER, canvas.width * canvas.height, gl.STREAM_DRAW);
+            gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
             return true;
         }
 
@@ -673,6 +706,9 @@ Grid: 0x0</div>
                 if (e.data.type === 'render') { 
                     pend = e.data.buf; 
                     pendView = new Uint8Array(pend);
+                    pendY0 = e.data.y0; 
+                    pendRows = e.data.rows; 
+                } else if (e.data.type === 'stats') { 
                     aC = e.data.aC; 
                     cTps = e.data.tps; 
                     counts = e.data.counts; 
@@ -681,45 +717,62 @@ Grid: 0x0</div>
             worker.postMessage({ type: 'init', w: canvas.width, h: canvas.height });
         }
 
-        function rLoop() {
+        function rLoop(now) {
             if (mDown) paint(lastX, lastY);
             if (pend) {
                 try { 
-                    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, canvas.width, canvas.height, gl.RED_INTEGER, gl.UNSIGNED_BYTE, pendView); 
-                    gl.drawArrays(gl.TRIANGLES, 0, 3); 
+                    // Upload just the changed row span via PBO
+                    gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, pbo);
+                    gl.bufferSubData(gl.PIXEL_UNPACK_BUFFER, 0, pendView);
+                    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, pendY0, canvas.width, pendRows, gl.RED_INTEGER, gl.UNSIGNED_BYTE, 0);
+                    gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
+                    upRows = pendRows;
+                    needDraw = true;
                 } catch (e) {}
-                if (worker) worker.postMessage({ type: 'buffer', buf: pend }, [pend]);
-                pend = null; pendView = null; fpsF++;
+                pend = null; pendView = null;
             }
+            // Only draw when something actually changed: new texture data, trace state
+            // flipped, first frame, or tab was re-shown. Idle frames cost ~nothing.
+            let tr = counts[2] > 0 ? 1 : 0;
+            if (tr !== lastTrace) { lastTrace = tr; needDraw = true; }
+            if (needDraw) {
+                gl.uniform1i(traceLoc, tr);
+                gl.drawArrays(gl.TRIANGLES, 0, 3);
+                needDraw = false;
+            }
+            fpsF++;
+            if (lastFT) { let dt = now - lastFT; ftEMA = ftEMA ? ftEMA * 0.9 + dt * 0.1 : dt; }
+            lastFT = now;
             requestAnimationFrame(rLoop);
         }
 
         function paint(cx, cy) {
-            if (!worker) return; const r = canvas.getBoundingClientRect();
-            const x = Math.floor((cx - r.left) * (canvas.width / r.width)), y = Math.floor((cy - r.top) * (canvas.height / r.height));
+            if (!worker || !cRect) return;
+            const x = Math.floor((cx - cRect.left) * (canvas.width / cRect.width)), y = Math.floor((cy - cRect.top) * (canvas.height / cRect.height));
             let items = [];
             if (sandChkEl.checked) items.push({mat: 1, size: sS});
             if (waterChkEl.checked) items.push({mat: 2, size: wS});
             if (items.length > 0) worker.postMessage({ type: 'paint', x, y, items: items });
         }
 
-        setInterval(() => { 
+        setInterval(() => {
             if (!stuffChk.checked) return;
-            let n = performance.now(), f = (fpsF * 1000) / (n - fpsL); 
-            fpsL = n; fpsF = 0; 
+            let n = performance.now(), f = (fpsF * 1000) / (n - fpsL);
+            fpsL = n; fpsF = 0;
             let sandC = counts[1] || 0;
             let waterC = counts[2] || 0;
             let wetC = counts[3] || 0;
             let totalC = sandC + waterC + wetC;
             let totalCells = canvas.width * canvas.height;
             let emptyC = totalCells - totalC;
-            statsDiv.innerText = `FPS: ${f.toFixed(0)}\nTPS: ${cTps}\nActive: ${aC}\nSand: ${sandC}\nWater: ${waterC}\nWet Sand: ${wetC}\nTotal: ${totalC}\nEmpty: ${emptyC}\nGrid: ${canvas.width}x${canvas.height}`;
+            statsDiv.innerText = `FPS: ${f.toFixed(0)}\nFrame: ${ftEMA.toFixed(1)}ms\nTPS: ${cTps}\nActive: ${aC}\nUp: ${upRows} rows\nRenderer: GPU\nSand: ${sandC}\nWater: ${waterC}\nWet Sand: ${wetC}\nTotal: ${totalC}\nEmpty: ${emptyC}\nGrid: ${canvas.width}x${canvas.height}`;
         }, 500);
 
         function init() {
-            canvas.width = Math.floor(window.innerWidth);
-            canvas.height = Math.floor(window.innerHeight);
-            setupEvents(); 
+            canvas.width = Math.max(64, window.innerWidth);
+            canvas.height = Math.max(64, window.innerHeight);
+            setupEvents();
+            cRect = canvas.getBoundingClientRect();
             try { if (initGL()) { initWorker(); rLoop(); } } catch (e) {}
             window.addEventListener('resize', () => location.reload());
         }
