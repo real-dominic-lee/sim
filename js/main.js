@@ -4,14 +4,14 @@ const stuffChk = document.getElementById('stuffChk');
 const sandChkEl = document.getElementById('sandChk');
 const waterChkEl = document.getElementById('waterChk');
 
-let gl, prog, tex, vao, traceLoc, pbo;
+let gl, prog, tex, vao, pbo;
 let worker = null;
 let sS = 100, wS = 100;
 let mDown = false, lastX = 0, lastY = 0;
 let aC = 0, cTps = 0, counts = [0, 0, 0, 0];
 let fpsL = performance.now(), fpsF = 0;
 let pend = null, pendView = null, pendY0 = 0, pendRows = 0, upRows = 0;
-let cRect = null, ftEMA = 0, lastFT = 0, needDraw = true, lastTrace = -1;
+let cRect = null, ftEMA = 0, lastFT = 0, needDraw = true;
 
 function setupEvents() {
     canvas.addEventListener('pointerdown', e => {
@@ -43,8 +43,6 @@ function initGL() {
         precision highp float;
         in vec2 v_uv;
         uniform highp usampler2D u_grid;
-        uniform vec2 u_texelSize;
-        uniform int u_trace;
         out vec4 c;
 
         vec4 getCol(uint id) {
@@ -57,55 +55,6 @@ function initGL() {
         void main() {
             uint id = texture(u_grid, v_uv).r;
             if (id != 0u) { c = getCol(id); return; }
-            if (u_trace == 1) {
-                bool foundL = false;
-                for(int i=1; i<=4; i++) {
-                    uint t = texture(u_grid, v_uv - vec2(u_texelSize.x * float(i), 0.0)).r;
-                    if (t != 0u) { if (t == 2u) foundL = true; break; }
-                }
-                if (foundL) {
-                    for(int i=1; i<=4; i++) {
-                        uint t = texture(u_grid, v_uv + vec2(u_texelSize.x * float(i), 0.0)).r;
-                        if (t != 0u) { if (t == 2u) { c = getCol(2u); return; } break; }
-                    }
-                }
-
-                bool foundD = false;
-                for(int i=1; i<=4; i++) {
-                    uint t = texture(u_grid, v_uv + vec2(0.0, u_texelSize.y * float(i))).r;
-                    if (t != 0u) { if (t == 2u) foundD = true; break; }
-                }
-                if (foundD) {
-                    for(int i=1; i<=4; i++) {
-                        uint t = texture(u_grid, v_uv - vec2(0.0, u_texelSize.y * float(i))).r;
-                        if (t != 0u) { if (t == 2u) { c = getCol(2u); return; } break; }
-                    }
-                }
-
-                bool foundDL = false;
-                for(int i=1; i<=3; i++) {
-                    uint t = texture(u_grid, v_uv + vec2(-u_texelSize.x * float(i), u_texelSize.y * float(i))).r;
-                    if (t != 0u) { if (t == 2u) foundDL = true; break; }
-                }
-                if (foundDL) {
-                    for(int i=1; i<=3; i++) {
-                        uint t = texture(u_grid, v_uv + vec2(u_texelSize.x * float(i), -u_texelSize.y * float(i))).r;
-                        if (t != 0u) { if (t == 2u) { c = getCol(2u); return; } break; }
-                    }
-                }
-
-                bool foundDR = false;
-                for(int i=1; i<=3; i++) {
-                    uint t = texture(u_grid, v_uv + vec2(u_texelSize.x * float(i), u_texelSize.y * float(i))).r;
-                    if (t != 0u) { if (t == 2u) foundDR = true; break; }
-                }
-                if (foundDR) {
-                    for(int i=1; i<=3; i++) {
-                        uint t = texture(u_grid, v_uv + vec2(-u_texelSize.x * float(i), -u_texelSize.y * float(i))).r;
-                        if (t != 0u) { if (t == 2u) { c = getCol(2u); return; } break; }
-                    }
-                }
-            }
             c = vec4(1.0, 1.0, 1.0, 1.0);
         }`);
     gl.compileShader(fs);
@@ -115,8 +64,6 @@ function initGL() {
     gl.attachShader(prog, fs);
     gl.linkProgram(prog);
     gl.useProgram(prog);
-
-    traceLoc = gl.getUniformLocation(prog, "u_trace");
     vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
 
@@ -177,10 +124,7 @@ function rLoop(now) {
         } catch (e) {}
         pend = null; pendView = null;
     }
-    let tr = counts[2] > 0 ? 1 : 0;
-    if (tr !== lastTrace) { lastTrace = tr; needDraw = true; }
     if (needDraw) {
-        gl.uniform1i(traceLoc, tr);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         needDraw = false;
     }
