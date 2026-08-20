@@ -192,12 +192,12 @@ Grid: 0x0</div>
             update() {
                 let tL=this.actL; this.actL=this.nxtL; this.nxtL=tL;
                 this.actC = this.nxtC; this.nxtC = 0; this.epc++; this.applyPaints();
-                let u = this.upd, actL = this.actL, actC = this.actC, W = this.W, dMin = this.dMin, dMax = this.dMax;
+                let u = this.upd, actL = this.actL, actC = this.actC, W = this.W, g = this.grid, dMin = this.dMin, dMax = this.dMax;
                 // Processed cells' origin rows are dirty (they may have vacated)
                 for(let i=0; i<actC; i++) { let idx=actL[i]; u[idx] = 0; let y=(idx/W)|0; if(y<dMin)dMin=y; if(y>dMax)dMax=y; }
                 this.dMin = dMin; this.dMax = dMax;
                 // Mutated target cells get tracked inside addA()
-                for(let i=0; i<actC; i++) { let idx=actL[i]; if(!u[idx]) this.proc(idx, 0); }
+                for(let i=0; i<actC; i++) { let idx=actL[i]; if(!u[idx] && g[idx]!==MAT.EMPTY) this.proc(idx, 0); }
             }
 
             proc(idx, depth) {
@@ -332,12 +332,6 @@ Grid: 0x0</div>
                             g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx]=0; vy[cIdx]=0; 
                             u[cIdx]=1; u[nIdx]=1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return; 
                         }
-                    } else if (nt === MAT.WATER && t === MAT.WATER) {
-                        vx[nIdx] = (vx[nIdx] + finalVx) * 0.75; 
-                        vy[nIdx] = (vy[nIdx] + finalVy) * 0.75;
-                        finalVx *= 0.25; finalVy *= 0.25; 
-                        vx[cIdx] = finalVx; vy[cIdx] = finalVy;
-                        u[nIdx] = 1; u[cIdx] = 1; this.addA(nIdx); this.addA(cIdx); break;
                     } else {
                         if (sy > 0) { 
                             finalVy = 0; 
@@ -451,10 +445,10 @@ Grid: 0x0</div>
                                 }
 
                                 // RANDOM WALK PATHFINDING SOAK: 3x max distance (180), Cubic curve falloff
-                                if (touchingWetSand && Math.random() < 0.35) {
-                                    let max_steps = 180; 
+                                if (touchingWetSand && Math.random() < SOAK_PROB) {
+                                    let maxSteps = 180; 
                                     let wx = cx, wy = cy;
-                                    for (let s = 1; s <= max_steps; s++) {
+                                    for (let s = 1; s <= maxSteps; s++) {
                                         let r = Math.random();
                                         let dx = 0, dy = 0;
                                         if (r < 0.7) dy = 1;       // 70% chance down (heavy gravity bias for depth)
@@ -469,7 +463,7 @@ Grid: 0x0</div>
                                             wx = nx; wy = ny; // Continue pathfinding
                                         } else if (g[nIdx] === MAT.SAND) {
                                             // Found dry sand! Calculate cubic soak chance (100% at s=1, ~12.5% at halfway, 0% at 180)
-                                            let progress = (s - 1) / (max_steps - 1);
+                                            let progress = (s - 1) / (maxSteps - 1);
                                             let soakChance = Math.pow(1.0 - progress, 3);
                                             
                                             if (Math.random() < soakChance) {
@@ -538,13 +532,13 @@ Grid: 0x0</div>
                 this.addA(cIdx);
             }
         }
-        let engine, lastT=0, acc=0, tpsC=0, lastTps=0, cTps=0, lastStats=0; const TPS=60, TMS=1000/TPS; 
+        let engine, lastT=0, acc=0, tpsC=0, lastTps=0, cTps=0, lastStats=0; let TPS=60, TMS=1000/TPS, SOAK_PROB=0.35, STATS_MS=500;
         let counts = new Int32Array(4);
         function tick() {
             let now = performance.now(); if(lastT===0){lastT=now;lastTps=now;} let d=now-lastT; lastT=now; acc+=d;
             let t=0; while(acc>=TMS && t<2){ engine.update(); acc-=TMS; t++; tpsC++; } if(acc>TMS*2) acc=0;
             if(now-lastTps>=1000){ cTps=tpsC; tpsC=0; lastTps=now; }
-            if(now-lastStats>=500){
+            if(STATS_MS && now-lastStats>=STATS_MS){
                 lastStats=now;
                 counts.fill(0);
                 let g=engine.grid, len=g.length;
@@ -566,7 +560,11 @@ Grid: 0x0</div>
         }
         self.onmessage = e => {
             const d = e.data;
-            if(d.type==='init'){ engine=new PhysicsEngine(d.w,d.h); lastT=0; lastTps=0; lastStats=0; tpsC=0; tick(); }
+            if(d.type==='init'){
+                engine=new PhysicsEngine(d.w,d.h); lastT=0; lastTps=0; lastStats=0; tpsC=0;
+                if(d.soft){ TPS=30; TMS=1000/TPS; SOAK_PROB=0.12; }
+                tick();
+            }
             else if(d.type==='paint'){ engine.paint(d.x, d.y, d.items); }
             else if(d.type==='clear'){ engine.clear(); }
         };
@@ -577,7 +575,30 @@ Grid: 0x0</div>
         const stuffChk = document.getElementById('stuffChk');
         const sandChkEl = document.getElementById('sandChk');
         const waterChkEl = document.getElementById('waterChk');
-        let gl, prog, tex, vao, traceLoc, pbo, worker = null, sS = 100, wS = 100, mDown = false, lastX = 0, lastY = 0, aC = 0, cTps = 0, counts = [0,0,0,0], fpsL = performance.now(), fpsF = 0, pend = null, pendView = null, pendY0 = 0, pendRows = 0, upRows = 0, cRect = null, ftEMA = 0, lastFT = 0, needDraw = true, lastTrace = -1;
+        let gl, prog, tex, vao, traceLoc, pbo, worker = null, sS = 100, wS = 100, mDown = false, lastX = 0, lastY = 0, aC = 0, cTps = 0, counts = [0,0,0,0], fpsL = performance.now(), fpsF = 0, pendQ = [], upRows = 0, cRect = null, ftEMA = 0, lastFT = 0, needDraw = true, lastTrace = -1, lastDraw = 0;
+
+        // Detect software rasterizer (Chrome "Use GPU" off -> SwiftShader, or Mesa llvmpipe/softpipe).
+        // Software WebGL is ~100x slower — compensate with lower resolution & shader cost.
+        function probeSoftwareGL() {
+            try {
+                let c = document.createElement('canvas'); c.width = c.height = 1;
+                let g = c.getContext('webgl2') || c.getContext('webgl');
+                if (!g) return false;
+                let di = g.getExtension('WEBGL_debug_renderer_info');
+                if (!di) return false;
+                let r = g.getParameter(di.UNMASKED_RENDERER_WEBGL) || '';
+                return /swiftshader|software|llvmpipe|softpipe/gi.test(r);
+            } catch (e) { return false; }
+        }
+        const SOFT = probeSoftwareGL() || new URLSearchParams(location.search).has('soft');
+        // Internal (backing-store) size as a fraction of CSS pixels.
+        // Halving each axis = 1/4 GPU fragments and 1/4 grid cells (physics too).
+        const RES_SCALE = SOFT ? 0.25 : 1.0;
+        // Water gap-fill trace: up to 8 texture reads per empty pixel — the #1 shader cost.
+        // Cosmetic only; cut to 0 under software GL.
+        const TRACE_DIST = SOFT ? 0 : 4;
+        // Cap draw rate; idle sim already skips draws via needDraw.
+        const MAX_FPS = SOFT ? 30 : 60;
 
         function setupEvents() {
             canvas.addEventListener('pointerdown', e => { 
@@ -627,12 +648,12 @@ Grid: 0x0</div>
                         // Optimized 4-direction trace for gap filling
                         // Horizontal trace (left then right)
                         bool foundL = false;
-                        for(int i=1; i<=4; i++) {
+                        for(int i=1; i<=${TRACE_DIST}; i++) {
                             uint t = texture(u_grid, v_uv - vec2(u_texelSize.x * float(i), 0.0)).r;
                             if (t != 0u) { if (t == 2u) foundL = true; break; }
                         }
                         if (foundL) {
-                            for(int i=1; i<=4; i++) {
+                            for(int i=1; i<=${TRACE_DIST}; i++) {
                                 uint t = texture(u_grid, v_uv + vec2(u_texelSize.x * float(i), 0.0)).r;
                                 if (t != 0u) { if (t == 2u) { c = getCol(2u); return; } break; }
                             }
@@ -640,12 +661,12 @@ Grid: 0x0</div>
                         
                         // Vertical trace (down then up)
                         bool foundD = false;
-                        for(int i=1; i<=4; i++) {
+                        for(int i=1; i<=${TRACE_DIST}; i++) {
                             uint t = texture(u_grid, v_uv + vec2(0.0, u_texelSize.y * float(i))).r;
                             if (t != 0u) { if (t == 2u) foundD = true; break; }
                         }
                         if (foundD) {
-                            for(int i=1; i<=4; i++) {
+                            for(int i=1; i<=${TRACE_DIST}; i++) {
                                 uint t = texture(u_grid, v_uv - vec2(0.0, u_texelSize.y * float(i))).r;
                                 if (t != 0u) { if (t == 2u) { c = getCol(2u); return; } break; }
                             }
@@ -653,12 +674,12 @@ Grid: 0x0</div>
                         
                         // Diagonal trace (down-left then up-right)
                         bool foundDL = false;
-                        for(int i=1; i<=3; i++) {
+                        for(int i=1; i<=${TRACE_DIST}; i++) {
                             uint t = texture(u_grid, v_uv + vec2(-u_texelSize.x * float(i), u_texelSize.y * float(i))).r;
                             if (t != 0u) { if (t == 2u) foundDL = true; break; }
                         }
                         if (foundDL) {
-                            for(int i=1; i<=3; i++) {
+                            for(int i=1; i<=${TRACE_DIST}; i++) {
                                 uint t = texture(u_grid, v_uv + vec2(u_texelSize.x * float(i), -u_texelSize.y * float(i))).r;
                                 if (t != 0u) { if (t == 2u) { c = getCol(2u); return; } break; }
                             }
@@ -666,12 +687,12 @@ Grid: 0x0</div>
                         
                         // Diagonal trace (down-right then up-left)
                         bool foundDR = false;
-                        for(int i=1; i<=3; i++) {
+                        for(int i=1; i<=${TRACE_DIST}; i++) {
                             uint t = texture(u_grid, v_uv + vec2(u_texelSize.x * float(i), u_texelSize.y * float(i))).r;
                             if (t != 0u) { if (t == 2u) foundDR = true; break; }
                         }
                         if (foundDR) {
-                            for(int i=1; i<=3; i++) {
+                            for(int i=1; i<=${TRACE_DIST}; i++) {
                                 uint t = texture(u_grid, v_uv + vec2(-u_texelSize.x * float(i), -u_texelSize.y * float(i))).r;
                                 if (t != 0u) { if (t == 2u) { c = getCol(2u); return; } break; }
                             }
@@ -702,43 +723,41 @@ Grid: 0x0</div>
 
         function initWorker() {
             worker = new Worker(URL.createObjectURL(new Blob([workerCode], { type: 'application/javascript' })));
-            worker.onmessage = e => { 
-                if (e.data.type === 'render') { 
-                    pend = e.data.buf; 
-                    pendView = new Uint8Array(pend);
-                    pendY0 = e.data.y0; 
-                    pendRows = e.data.rows; 
-                } else if (e.data.type === 'stats') { 
+            worker.onmessage = e => {
+                if (e.data.type === 'render') {
+                    if (pendQ.length < 16) pendQ.push({ buf: e.data.buf, y0: e.data.y0, rows: e.data.rows });
+                } else if (e.data.type === 'stats') {
                     aC = e.data.aC; 
                     cTps = e.data.tps; 
                     counts = e.data.counts; 
                 } 
             };
-            worker.postMessage({ type: 'init', w: canvas.width, h: canvas.height });
+            worker.postMessage({ type: 'init', w: canvas.width, h: canvas.height, soft: SOFT });
         }
 
-        function rLoop(now) {
+        function rLoop(now = performance.now()) {
             if (mDown) paint(lastX, lastY);
-            if (pend) {
-                try { 
+            while (pendQ.length) {
+                let p = pendQ.shift();
+                try {
                     // Upload just the changed row span via PBO
                     gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, pbo);
-                    gl.bufferSubData(gl.PIXEL_UNPACK_BUFFER, 0, pendView);
-                    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, pendY0, canvas.width, pendRows, gl.RED_INTEGER, gl.UNSIGNED_BYTE, 0);
+                    gl.bufferSubData(gl.PIXEL_UNPACK_BUFFER, 0, new Uint8Array(p.buf));
+                    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, p.y0, canvas.width, p.rows, gl.RED_INTEGER, gl.UNSIGNED_BYTE, 0);
                     gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
-                    upRows = pendRows;
+                    upRows = p.rows;
                     needDraw = true;
                 } catch (e) {}
-                pend = null; pendView = null;
             }
             // Only draw when something actually changed: new texture data, trace state
             // flipped, first frame, or tab was re-shown. Idle frames cost ~nothing.
             let tr = counts[2] > 0 ? 1 : 0;
             if (tr !== lastTrace) { lastTrace = tr; needDraw = true; }
-            if (needDraw) {
+            if (needDraw && now - lastDraw >= 1000 / MAX_FPS) {
                 gl.uniform1i(traceLoc, tr);
                 gl.drawArrays(gl.TRIANGLES, 0, 3);
                 needDraw = false;
+                lastDraw = now;
             }
             fpsF++;
             if (lastFT) { let dt = now - lastFT; ftEMA = ftEMA ? ftEMA * 0.9 + dt * 0.1 : dt; }
@@ -757,7 +776,7 @@ Grid: 0x0</div>
 
         setInterval(() => {
             if (!stuffChk.checked) return;
-            let n = performance.now(), f = (fpsF * 1000) / (n - fpsL);
+            let n = performance.now(), dt = n - fpsL, f = dt > 0 ? (fpsF * 1000) / dt : 0;
             fpsL = n; fpsF = 0;
             let sandC = counts[1] || 0;
             let waterC = counts[2] || 0;
@@ -769,8 +788,8 @@ Grid: 0x0</div>
         }, 500);
 
         function init() {
-            canvas.width = Math.max(64, window.innerWidth);
-            canvas.height = Math.max(64, window.innerHeight);
+            canvas.width = Math.max(64, Math.floor(window.innerWidth * RES_SCALE));
+            canvas.height = Math.max(64, Math.floor(window.innerHeight * RES_SCALE));
             setupEvents();
             cRect = canvas.getBoundingClientRect();
             try { if (initGL()) { initWorker(); rLoop(); } } catch (e) {}
