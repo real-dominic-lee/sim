@@ -139,6 +139,72 @@ class PhysicsEngine {
         }
     }
 
+    applyBulkFlow() {
+        const W = this.W, H = this.H, g = this.grid, vx = this.vx, vy = this.vy, u = this.upd;
+        const pressure = new Float32Array(W * H);
+
+        for (let y = H - 1; y >= 0; y--) {
+            for (let x = 0; x < W; x++) {
+                const i = y * W + x;
+                if (g[i] !== MAT.WATER) { pressure[i] = 0; continue; }
+                let p = 1.0;
+                if (y + 1 < H && g[i + W] === MAT.WATER) p += pressure[i + W] * 0.8;
+                pressure[i] = p;
+            }
+        }
+
+        for (let y = 0; y < H; y++) {
+            for (let x = 0; x < W; x++) {
+                const i = y * W + x;
+                if (g[i] !== MAT.WATER || u[i] || pressure[i] < 1.5) continue;
+
+                let cx = x, cy = y, bestDir = 0, bestP = 0;
+                if (cx > 0 && g[i - 1] === MAT.EMPTY) {
+                    let p = 0;
+                    for (let dx = 1; dx < 8 && cx - dx >= 0; dx++) {
+                        const ci = cy * W + (cx - dx);
+                        if (g[ci] === MAT.WATER) p += pressure[ci] * 0.7;
+                        else if (g[ci] === MAT.EMPTY) p += 0.5;
+                        else break;
+                    }
+                    if (p > bestP) { bestP = p; bestDir = -1; }
+                }
+                if (cx < W - 1 && g[i + 1] === MAT.EMPTY) {
+                    let p = 0;
+                    for (let dx = 1; dx < 8 && cx + dx < W; dx++) {
+                        const ci = cy * W + (cx + dx);
+                        if (g[ci] === MAT.WATER) p += pressure[ci] * 0.7;
+                        else if (g[ci] === MAT.EMPTY) p += 0.5;
+                        else break;
+                    }
+                    if (p > bestP) { bestP = p; bestDir = 1; }
+                }
+                if (cy + 1 < H && g[i + W] === MAT.EMPTY) {
+                    let p = pressure[i] * 1.5;
+                    if (p > bestP) { bestP = p; bestDir = 0; }
+                }
+
+                if (bestDir !== 0 && bestP > 2.0) {
+                    const speed = 4.0 + bestP * 0.6;
+                    if (bestDir < 0) {
+                        g[i - 1] = MAT.WATER; g[i] = MAT.EMPTY;
+                        vx[i - 1] = -speed; vy[i - 1] = 0;
+                        u[i - 1] = 1; u[i] = 1; this.addA(i - 1); this.wake(i);
+                    } else {
+                        g[i + 1] = MAT.WATER; g[i] = MAT.EMPTY;
+                        vx[i + 1] = speed; vy[i + 1] = 0;
+                        u[i + 1] = 1; u[i] = 1; this.addA(i + 1); this.wake(i);
+                    }
+                } else if (bestDir === 0 && bestP > 2.0) {
+                    const speed = 6.0 + bestP * 0.4;
+                    g[i + W] = MAT.WATER; g[i] = MAT.EMPTY;
+                    vx[i + W] = 0; vy[i + W] = speed;
+                    u[i + W] = 1; u[i] = 1; this.addA(i + W); this.wake(i);
+                }
+            }
+        }
+    }
+
     paint(x, y, items) { this.paintQ.push({ x, y, items }); }
     applyPaints() {
         for (let p of this.paintQ) {
@@ -184,6 +250,7 @@ class PhysicsEngine {
     update() {
         let tL = this.actL; this.actL = this.nxtL; this.nxtL = tL;
         this.actC = this.nxtC; this.nxtC = 0; this.epc++; this.applyPaints();
+        this.applyBulkFlow();
         this.applyCohesion();
         let u = this.upd, actL = this.actL, actC = this.actC, W = this.W, dMin = this.dMin, dMax = this.dMax;
         for (let i = 0; i < actC; i++) { let idx = actL[i]; u[idx] = 0; let y = (idx / W) | 0; if (y < dMin) dMin = y; if (y > dMax) dMax = y; }
