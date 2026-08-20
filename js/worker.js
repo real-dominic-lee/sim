@@ -113,104 +113,28 @@ class PhysicsEngine {
         this.nxtC = nc;
     }
 
-    moveWaterBodies() {
+    applyCohesion() {
         const W = this.W, H = this.H, g = this.grid, vx = this.vx, vy = this.vy, u = this.upd;
-        const visited = new Uint8Array(W * H);
-        const queue = new Int32Array(W * H);
-
         for (let i = 0; i < W * H; i++) {
-            if (g[i] !== MAT.WATER || visited[i]) continue;
+            if (g[i] !== MAT.WATER) continue;
+            if (u[i]) continue;
 
-            let qh = 0, qt = 0;
-            queue[qt++] = i;
-            visited[i] = 1;
-            const body = [];
-            let minY = H, maxY = 0, totalVx = 0, totalVy = 0;
+            let cx = i % W, cy = (i / W) | 0;
+            let supported = (cy + 1 < H) && (g[i + W] !== MAT.EMPTY);
+            let neighborCount = 0;
+            let avgVx = 0, avgVy = 0;
 
-            while (qh < qt) {
-                const cIdx = queue[qh++];
-                body.push(cIdx);
-                const cx = cIdx % W, cy = (cIdx / W) | 0;
-                if (cy < minY) minY = cy;
-                if (cy > maxY) maxY = cy;
-                totalVx += vx[cIdx];
-                totalVy += vy[cIdx];
+            if (cy > 0 && g[i - W] === MAT.WATER) { neighborCount++; avgVx += vx[i - W]; avgVy += vy[i - W]; }
+            if (cx > 0 && g[i - 1] === MAT.WATER) { neighborCount++; avgVx += vx[i - 1]; avgVy += vy[i - 1]; }
+            if (cx < W - 1 && g[i + 1] === MAT.WATER) { neighborCount++; avgVx += vx[i + 1]; avgVy += vy[i + 1]; }
+            if (cy < H - 1 && g[i + W] === MAT.WATER) { neighborCount++; avgVx += vx[i + W]; avgVy += vy[i + W]; }
 
-                if (cy > 0) {
-                    const up = cIdx - W;
-                    if (g[up] === MAT.WATER && !visited[up]) { visited[up] = 1; queue[qt++] = up; }
-                }
-                if (cx > 0) {
-                    const left = cIdx - 1;
-                    if (g[left] === MAT.WATER && !visited[left]) { visited[left] = 1; queue[qt++] = left; }
-                }
-                if (cx < W - 1) {
-                    const right = cIdx + 1;
-                    if (g[right] === MAT.WATER && !visited[right]) { visited[right] = 1; queue[qt++] = right; }
-                }
-                if (cy < H - 1) {
-                    const down = cIdx + W;
-                    if (g[down] === MAT.WATER && !visited[down]) { visited[down] = 1; queue[qt++] = down; }
-                }
-            }
-
-            if (body.length < 4) continue;
-
-            let bestDir = 0, bestScore = 0;
-            for (const cIdx of body) {
-                const cx = cIdx % W, cy = (cIdx / W) | 0;
-                if (cy + 1 >= H) continue;
-                const down = cIdx + W;
-                if (g[down] === MAT.EMPTY) {
-                    let score = 0;
-                    for (let dy = 1; dy < 10 && cy + dy < H; dy++) {
-                        const check = (cy + dy) * W + cx;
-                        if (g[check] === MAT.EMPTY) score++;
-                        else if (g[check] === MAT.WATER) score += 0.5;
-                        else break;
-                    }
-                    if (score > bestScore) { bestScore = score; bestDir = 0; }
-                }
-                if (cx > 0 && g[cIdx - 1] === MAT.EMPTY) {
-                    let score = 0;
-                    for (let dx = 1; dx < 10 && cx - dx >= 0; dx++) {
-                        const check = cy * W + (cx - dx);
-                        if (g[check] === MAT.EMPTY) score++;
-                        else if (g[check] === MAT.WATER) score += 0.5;
-                        else { if (cy + 1 < H && g[check + W] === MAT.EMPTY) score += 5; break; }
-                    }
-                    if (score > bestScore) { bestScore = score; bestDir = -1; }
-                }
-                if (cx < W - 1 && g[cIdx + 1] === MAT.EMPTY) {
-                    let score = 0;
-                    for (let dx = 1; dx < 10 && cx + dx < W; dx++) {
-                        const check = cy * W + (cx + dx);
-                        if (g[check] === MAT.EMPTY) score++;
-                        else if (g[check] === MAT.WATER) score += 0.5;
-                        else { if (cy + 1 < H && g[check + W] === MAT.EMPTY) score += 5; break; }
-                    }
-                    if (score > bestScore) { bestScore = score; bestDir = 1; }
-                }
-            }
-
-            if (bestDir !== 0 && bestScore > 3) {
-                const speed = 8.0 + bestScore * 0.5;
-                for (const cIdx of body) {
-                    const cx = cIdx % W, cy = (cIdx / W) | 0;
-                    if (bestDir < 0 && cx > 0 && g[cIdx - 1] === MAT.EMPTY) {
-                        g[cIdx - 1] = MAT.WATER; g[cIdx] = MAT.EMPTY;
-                        vx[cIdx - 1] = -speed; vy[cIdx - 1] = 0;
-                        u[cIdx - 1] = 1; u[cIdx] = 1; this.addA(cIdx - 1); this.wake(cIdx);
-                    } else if (bestDir > 0 && cx < W - 1 && g[cIdx + 1] === MAT.EMPTY) {
-                        g[cIdx + 1] = MAT.WATER; g[cIdx] = MAT.EMPTY;
-                        vx[cIdx + 1] = speed; vy[cIdx + 1] = 0;
-                        u[cIdx + 1] = 1; u[cIdx] = 1; this.addA(cIdx + 1); this.wake(cIdx);
-                    } else if (cy + 1 < H && g[cIdx + W] === MAT.EMPTY) {
-                        g[cIdx + W] = MAT.WATER; g[cIdx] = MAT.EMPTY;
-                        vx[cIdx + W] = bestDir * speed * 0.3; vy[cIdx + W] = 5.0;
-                        u[cIdx + W] = 1; u[cIdx] = 1; this.addA(cIdx + W); this.wake(cIdx);
-                    }
-                }
+            if (neighborCount >= 2 && supported) {
+                avgVx /= neighborCount; avgVy /= neighborCount;
+                vx[i] = vx[i] * 0.3 + avgVx * 0.7;
+                vy[i] = vy[i] * 0.3 + avgVy * 0.7;
+            } else if (neighborCount === 0 && !supported) {
+                if (Math.random() < 0.15) { vx[i] = 0; vy[i] = 0; }
             }
         }
     }
@@ -260,7 +184,7 @@ class PhysicsEngine {
     update() {
         let tL = this.actL; this.actL = this.nxtL; this.nxtL = tL;
         this.actC = this.nxtC; this.nxtC = 0; this.epc++; this.applyPaints();
-        this.moveWaterBodies();
+        this.applyCohesion();
         let u = this.upd, actL = this.actL, actC = this.actC, W = this.W, dMin = this.dMin, dMax = this.dMax;
         for (let i = 0; i < actC; i++) { let idx = actL[i]; u[idx] = 0; let y = (idx / W) | 0; if (y < dMin) dMin = y; if (y > dMax) dMax = y; }
         this.dMin = dMin; this.dMax = dMax;
@@ -501,8 +425,8 @@ class PhysicsEngine {
                 }
                 if (!rMoved) {
                     let d = Math.random() < 0.5 ? 1 : -1;
-                    if (tryDiag(this, t, cx, cy, cIdx, d, (t === MAT.WATER) ? 6.0 : 4.0)) { cx += d; cy++; cIdx += W + d; rMoved = true; }
-                    else if (tryDiag(this, t, cx, cy, cIdx, -d, (t === MAT.WATER) ? 6.0 : 4.0)) { cx -= d; cy++; cIdx += W - d; rMoved = true; }
+                    if (tryDiag(this, t, cx, cy, cIdx, d, 6.0)) { cx += d; cy++; cIdx += W + d; rMoved = true; }
+                    else if (tryDiag(this, t, cx, cy, cIdx, -d, 6.0)) { cx -= d; cy++; cIdx += W - d; rMoved = true; }
                     else {
                         let touchingSand = (cy + 1 < H && g[cIdx + W] === MAT.SAND) || (cy > 0 && g[cIdx - W] === MAT.SAND) || (cx > 0 && g[cIdx - 1] === MAT.SAND) || (cx < W - 1 && g[cIdx + 1] === MAT.SAND);
                         let touchingWetSand = (cy + 1 < H && g[cIdx + W] === MAT.WET_SAND) || (cy > 0 && g[cIdx - W] === MAT.WET_SAND) || (cx > 0 && g[cIdx - 1] === MAT.WET_SAND) || (cx < W - 1 && g[cIdx + 1] === MAT.WET_SAND);
