@@ -1,0 +1,5 @@
+body { margin: 0; overflow: hidden; font-family: monospace; background: #fff; }
+canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; touch-action: none; }
+#ui-left { position: absolute; top: 5px; left: 5px; z-index: 10; font-size: 12px; display: flex; gap: 8px; align-items: center; }
+#ui-right { position: absolute; top: 5px; right: 5px; z-index: 10; font-size: 12px; text-align: right; }
+#stats { display: none; text-align: right; white-space: pre; line-height: 1.4; margin-top: 2px; }
