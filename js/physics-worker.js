@@ -1,5 +1,7 @@
 // Physics worker — runs in a Web Worker, posts changed row spans back to main thread.
 const MAT = { EMPTY: 0, SAND: 1, WATER: 2, WET_SAND: 3, DENSITY: [0, 4, 1, 4], FRICTION: [1, 0.8, 0.995, 0.6] };
+// Sand tuned knobs (gravity per physics tick, terminal fall speed in cells/step).
+const GRAV = 1.2, MAX_FALL = 16;
 
 function tryDiag(engine, t, cx, cy, cIdx, dir, speed) {
     const W=engine.W, H=engine.H, g=engine.grid, vx=engine.vx, vy=engine.vy, u=engine.upd;
@@ -11,13 +13,13 @@ function tryDiag(engine, t, cx, cy, cIdx, dir, speed) {
         let canDown = (dType === MAT.EMPTY) || (dType === MAT.WATER && MAT.DENSITY[t] > MAT.DENSITY[MAT.WATER]);
         if (canSide && canDown) {
             if (t === MAT.SAND && dType === MAT.WATER) {
-                g[dIdx] = MAT.WET_SAND; g[cIdx] = MAT.EMPTY; vx[cIdx]=0; vy[cIdx]=0;
+                engine.setCell(dIdx, MAT.WET_SAND); engine.setCell(cIdx, MAT.EMPTY); vx[cIdx]=0; vy[cIdx]=0;
             } else {
-                g[dIdx] = t;
+                engine.setCell(dIdx, t);
                 if (dType === MAT.WATER) {
-                    g[cIdx] = MAT.WATER; vy[cIdx] = -1.5;
+                    engine.setCell(cIdx, MAT.WATER); vy[cIdx] = -1.5;
                 } else {
-                    g[cIdx] = MAT.EMPTY; vx[cIdx]=0; vy[cIdx]=0;
+                    engine.setCell(cIdx, MAT.EMPTY); vx[cIdx]=0; vy[cIdx]=0;
                 }
                 vx[dIdx] = dir * speed; vy[dIdx] = 0;
             }
@@ -28,32 +30,6 @@ function tryDiag(engine, t, cx, cy, cIdx, dir, speed) {
     return false;
 }
 
-function tryDensitySlide(engine, t, cx, cy, cIdx, dir) {
-    const W=engine.W, H=engine.H, g=engine.grid, vx=engine.vx, vy=engine.vy, u=engine.upd;
-    let tCx = cx + dir;
-    if (tCx >= 0 && tCx < W && cy + 1 < H) {
-        let sIdx = cy * W + tCx, dIdx = sIdx + W;
-        let sType = g[sIdx], dType = g[dIdx];
-        let canSide = (sType === MAT.EMPTY) || (sType === MAT.WATER && MAT.DENSITY[t] > MAT.DENSITY[MAT.WATER]);
-        let canDown = (dType === MAT.EMPTY) || (dType === MAT.WATER && MAT.DENSITY[t] > MAT.DENSITY[MAT.WATER]);
-        if (canSide && canDown) {
-            if (t === MAT.SAND && dType === MAT.WATER) {
-                g[dIdx] = MAT.WET_SAND; g[cIdx] = MAT.EMPTY; vx[cIdx]=0; vy[cIdx]=0;
-            } else {
-                g[dIdx] = t;
-                if (dType === MAT.WATER) {
-                    g[cIdx] = MAT.WATER; vy[cIdx] = -1.5;
-                } else {
-                    g[cIdx] = MAT.EMPTY; vx[cIdx]=0; vy[cIdx]=0;
-                }
-                vy[dIdx] = 0; vx[dIdx] = dir * 1.5;
-            }
-            u[dIdx] = 1; u[cIdx] = 1; engine.addA(dIdx); engine.addA(cIdx); engine.wake(cIdx);
-            return true;
-        }
-    }
-    return false;
-}
 
 function tryRoll(engine, t, cx, cy, cIdx, dir) {
     const W=engine.W, H=engine.H, g=engine.grid, vx=engine.vx, vy=engine.vy, u=engine.upd;
@@ -62,7 +38,7 @@ function tryRoll(engine, t, cx, cy, cIdx, dir) {
     let dIdx = hIdx + W;
     if (g[hIdx] === MAT.EMPTY && g[dIdx] === t) {
         if (Math.random() < 0.2) {
-            g[hIdx] = t; g[cIdx] = MAT.EMPTY;
+            engine.setCell(hIdx, t); engine.setCell(cIdx, MAT.EMPTY);
             vx[hIdx] = dir * 2.5; vy[hIdx] = -0.2;
             u[hIdx] = 1; u[cIdx] = 1; engine.addA(hIdx); engine.wake(cIdx);
             return true;
@@ -83,10 +59,23 @@ class PhysicsEngine {
         this.nxtL = new Int32Array(this.maxA);
         this.ep = new Uint32Array(w * h);
         this.epc = 0; this.actC = 0; this.nxtC = 0; this.paintQ = [];
+        // Incremental material counters (avoids full-grid scan every 500ms).
+        this.cters = new Int32Array(4);
+        this.cters[0] = w * h; // all EMPTY at birth
         // Dirty row span: rows [dMin, dMax] changed since last render send
         this.dMin = h; this.dMax = -1;
     }
-    clear() { this.grid.fill(0); this.vx.fill(0); this.vy.fill(0); this.ep.fill(0); this.epc = this.actC = this.nxtC = 0; this.paintQ.length = 0; this.dMin = 0; this.dMax = this.H - 1; }
+    // Set a cell's material, maintaining incremental counters.
+    setCell(i, m) {
+        let g = this.grid, old = g[i];
+        if (old !== m) { this.cters[old]--; this.cters[m]++; g[i] = m; return true; }
+        return false;
+    }
+    // Swap two cells' materials (a relocation: counts unchanged).
+    swapCell(a, b) {
+        let g = this.grid, tmp = g[a]; g[a] = g[b]; g[b] = tmp;
+    }
+    clear() { this.grid.fill(0); this.vx.fill(0); this.vy.fill(0); this.ep.fill(0); this.epc = this.actC = this.nxtC = 0; this.paintQ.length = 0; this.cters[0] = this.W * this.H; for (let k=1;k<4;k++) this.cters[k]=0; this.dMin = 0; this.dMax = this.H - 1; }
     addA(i) {
         let y = (i / this.W) | 0;
         if (y < this.dMin) this.dMin = y;
@@ -138,7 +127,7 @@ class PhysicsEngine {
                         if(nx >= 0 && nx < this.W && ny >= 0 && ny < this.H) {
                             let idx = ny * this.W + nx;
                             if(this.grid[idx] === MAT.EMPTY) {
-                                this.grid[idx] = mat;
+                                this.setCell(idx, mat);
                                 this.vx[idx] = 0;
                                 this.vy[idx] = 0;
                                 this.addA(idx); this.wake(idx);
@@ -161,11 +150,84 @@ class PhysicsEngine {
         for(let i=0; i<actC; i++) { let idx=actL[i]; if(!u[idx] && g[idx]!==MAT.EMPTY) this.proc(idx, 0); }
     }
 
+    // Cheap discrete sand solver. Gravity accumulates in vy (capped at MAX_FALL);
+    // the grain falls as far as empty space allows in ONE column scan, then
+    // diagonally settles / rolls when blocked. No substep loop, no recursion.
+    procSand(idx, t) {
+        const W=this.W, H=this.H, g=this.grid, vx=this.vx, vy=this.vy;
+        let x=idx%W, y=(idx/W)|0;
+        let vyc = vy[idx] + GRAV;
+        if (vyc > MAX_FALL) vyc = MAX_FALL;
+        let vxc = vx[idx] * 0.95;
+        if (Math.abs(vxc) < 0.05) vxc = 0;
+        // Fall straight down through empty cells, up to floor(vyc) rows.
+        let fallDist = vyc|0; if (fallDist < 1) fallDist = 1;
+        let dist = 0, wetAt = -1, fellOff = false;
+        for (let s = 1; s <= fallDist; s++) {
+            if (y + s >= H) { fellOff = true; break; }
+            let nt = g[idx + s*W];
+            if (nt === MAT.EMPTY) { dist = s; }
+            else if (nt === MAT.WATER) { wetAt = idx + s*W; break; }
+            else break;
+        }
+        if (dist > 0 && !wetAt) {
+            // Move down through the empty column.
+            let nIdx = idx + dist*W;
+            this.setCell(idx, MAT.EMPTY);
+            this.setCell(nIdx, t);
+            vx[nIdx] = vxc * 0.5; vy[nIdx] = vyc * 0.7 + dist * 0.3;
+            this.upd[idx]=1; this.upd[nIdx]=1; this.addA(nIdx); this.addA(idx); this.wake(nIdx);
+            // Still falling freely if there's empty space directly below the new cell.
+            if (y + dist + 1 < H && g[nIdx + W] === MAT.EMPTY && !fellOff) {
+                return; // keep momentum, process again next tick
+            }
+            // Landed on a blocker (or fell off the bottom): re-evaluate at nIdx.
+            idx = nIdx; x = idx % W; y = (idx / W) | 0;
+            vxc = vx[idx]; vyc = vy[idx];
+        }
+        if (wetAt !== -1) {
+            // Sand reaching water wets in place at the water surface.
+            this.setCell(idx, MAT.EMPTY);
+            this.setCell(wetAt, MAT.WET_SAND);
+            vx[wetAt] = 0; vy[wetAt] = (t === MAT.WET_SAND) ? -1.5 : 0;
+            vx[idx] = 0; vy[idx] = 0; this.upd[wetAt]=1; this.upd[idx]=1;
+            this.addA(wetAt); this.addA(idx); this.wake(wetAt);
+            return;
+        }
+        // Blocked directly below: try a diagonal slide, then a roll, else rest.
+        let slid = false;
+        if (y + 1 < H && g[idx + W] === MAT.WATER) {
+            // Resting on water surface: sand sinks → wet.
+            this.setCell(idx, MAT.EMPTY); this.setCell(idx + W, MAT.WET_SAND);
+            vx[idx]=0; vy[idx]=0; vx[idx+W]=0; vy[idx+W]=0;
+            this.upd[idx]=1; this.upd[idx+W]=1; this.addA(idx); this.addA(idx+W); this.wake(idx+W);
+            return;
+        }
+        let d = Math.random() < 0.5 ? 1 : -1;
+        if (tryDiag(this, t, x, y, idx, d, 1.5)) { slid = true; }
+        else if (tryDiag(this, t, x, y, idx, -d, 1.5)) { slid = true; }
+        if (!slid) {
+            if (tryRoll(this, t, x, y, idx, Math.random() < 0.5 ? 1 : -1)) slid = true;
+            else if (tryRoll(this, t, x, y, idx, Math.random() < 0.5 ? 1 : -1)) slid = true;
+        }
+        if (slid) return;
+        // Resting: damp residual velocity; sleep if fully at rest.
+        vx[idx] = vxc * 0.4; vy[idx] = vyc * 0.4;
+        if (Math.abs(vx[idx]) < 0.1) vx[idx] = 0;
+        if (Math.abs(vy[idx]) < 0.1) vy[idx] = 0;
+        if (vx[idx] === 0 && vy[idx] === 0) return; // settled -> sleep (not re-added)
+        this.addA(idx);
+    }
+
     proc(idx, depth) {
         const W=this.W, H=this.H, g=this.grid, vx=this.vx, vy=this.vy, u=this.upd;
         let x=idx%W, y=(idx/W)|0, t=g[idx];
         if(t===MAT.EMPTY) return;
         u[idx]=1;
+
+        // Sand (and wet sand) use a cheap discrete solver: gravity + column fall
+        // + diagonal/roll settling. No 30-substep loop, no same-type recursion.
+        if(t===MAT.SAND||t===MAT.WET_SAND){ this.procSand(idx,t); return; }
 
         let pressure = 0;
         if (t === MAT.WATER) {
@@ -324,59 +386,6 @@ class PhysicsEngine {
 
         if (!moved || (Math.abs(finalVx) < 1.0 && Math.abs(finalVy) < 1.0)) {
             let rMoved = false;
-            if (t !== MAT.WATER) {
-                if (cy + 1 < H && g[cIdx + W] === MAT.EMPTY) {
-                    let bIdx = cIdx + W;
-                    g[bIdx] = t; g[cIdx] = MAT.EMPTY; vy[bIdx] = vy[cIdx] + 1.2; vx[bIdx] = vx[cIdx]; vx[cIdx] = 0; vy[cIdx] = 0;
-                    u[bIdx] = 1; u[cIdx] = 1; this.addA(bIdx); this.wake(cIdx); cIdx = bIdx; cy++; rMoved = true;
-                }
-                if (!rMoved) {
-                    let d = Math.random() < 0.5 ? 1 : -1;
-                    if (tryDensitySlide(this, t, cx, cy, cIdx, d)) { cx += d; cy++; cIdx += W + d; rMoved = true; }
-                    else if (tryDensitySlide(this, t, cx, cy, cIdx, -d)) { cx -= d; cy++; cIdx += W - d; rMoved = true; }
-
-                    if (!rMoved && cy + 1 < H && g[cIdx + W] === t && Math.abs(vx[cIdx]) < 0.5) {
-                        let rollD = Math.random() < 0.5 ? 1 : -1;
-                        if (tryRoll(this, t, cx, cy, cIdx, rollD)) { cx += rollD; cIdx += rollD; rMoved = true; }
-                        else if (tryRoll(this, t, cx, cy, cIdx, -rollD)) { cx -= rollD; cIdx -= rollD; rMoved = true; }
-                    }
-
-                    if (!rMoved && cy + 1 < H && g[cIdx + W] === t) {
-                        if (Math.abs(vx[cIdx]) < 0.1 && Math.random() < 0.02) {
-                            let rollDir = (Math.random() < 0.5) ? 1 : -1;
-                            if (cx + rollDir >= 0 && cx + rollDir < W) {
-                                let sIdx = cIdx + rollDir;
-                                let dIdx = cIdx + W + rollDir;
-                                if (g[sIdx] === MAT.EMPTY && g[dIdx] === MAT.EMPTY) {
-                                    g[dIdx] = t; g[cIdx] = MAT.EMPTY;
-                                    vx[dIdx] = rollDir * 2.5; vy[dIdx] = 1.0;
-                                    u[dIdx] = 1; u[cIdx] = 1; this.addA(dIdx); this.wake(cIdx);
-                                    cIdx = dIdx; cx += rollDir; cy++; rMoved = true;
-                                }
-                            }
-                        }
-                    }
-
-                    if (!rMoved && cy + 1 < H && g[cIdx + W] === t && Math.abs(vx[cIdx]) < 0.5) {
-                        let dir = (Math.random() < 0.5) ? 1 : -1;
-                        if (cx + dir >= 0 && cx + dir < W) {
-                            let s1 = cIdx + dir;
-                            let d1 = s1 + W;
-                            if (g[s1] === t && g[d1] === MAT.EMPTY) {
-                                if (Math.random() < 0.05) {
-                                    g[s1] = t; g[d1] = t; g[cIdx] = MAT.EMPTY;
-                                    vx[s1] = 0; vy[s1] = 0;
-                                    vx[d1] = dir * 2.5; vy[d1] = 1.5;
-                                    vx[cIdx] = 0; vy[cIdx] = 0;
-                                    u[s1] = 1; u[d1] = 1; u[cIdx] = 1;
-                                    this.addA(s1); this.addA(d1); this.addA(cIdx); this.wake(cIdx);
-                                    cIdx = s1; cx += dir; rMoved = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
                 if (cy + 1 < H && g[cIdx + W] === MAT.EMPTY) {
                     let bIdx = cIdx + W;
                     g[bIdx] = t; g[cIdx] = MAT.EMPTY; vy[bIdx] = vy[cIdx] + 1.2; vx[bIdx] = vx[cIdx]; vx[cIdx] = 0; vy[cIdx] = 0;
@@ -488,7 +497,6 @@ class PhysicsEngine {
             if (Math.abs(vx[cIdx]) < 0.1) vx[cIdx] = 0;
             if (Math.abs(vy[cIdx]) < 0.1) vy[cIdx] = 0;
             if (vx[cIdx] === 0 && vy[cIdx] === 0) return;
-        }
         }
         this.addA(cIdx);
     }
