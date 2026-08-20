@@ -1,4 +1,4 @@
-const MAT = { EMPTY: 0, SAND: 1, WATER: 2, WET_SAND: 3, DENSITY: [0, 4, 1, 4], FRICTION: [1, 0.8, 0.995, 0.6] };
+const MAT = { EMPTY: 0, SAND: 1, WATER: 2, WET_SAND: 3, DENSITY: [0, 4, 1, 4], FRICTION: [1, 0.8, 0.998, 0.6] };
 
 function tryDiag(engine, t, cx, cy, cIdx, dir, speed) {
     const W = engine.W, H = engine.H, g = engine.grid, vx = engine.vx, vy = engine.vy, u = engine.upd;
@@ -209,7 +209,7 @@ class PhysicsEngine {
 
         let vxc = vx[idx];
         let vyc = vy[idx];
-        vyc += 1.2;
+        vyc += (t === MAT.WATER) ? 1.8 : 1.2;
 
         if ((y + 1 >= H || g[idx + W] !== MAT.EMPTY)) {
             vxc *= (t === MAT.WATER) ? 0.975 : MAT.FRICTION[t];
@@ -270,17 +270,17 @@ class PhysicsEngine {
                     if (sy > 0) {
                         finalVy = 0;
                         if (t === MAT.WATER) {
-                            let force = 2.5 + pressure * 0.8;
-                            if (force > 8.0) force = 8.0;
+                            let force = 4.0 + pressure * 1.2;
+                            if (force > 12.0) force = 12.0;
                             if (cx > 0 && g[cIdx - 1] === MAT.EMPTY) finalVx -= vyc * force;
                             if (cx < W - 1 && g[cIdx + 1] === MAT.EMPTY) finalVx += vyc * force;
 
                             if (finalVx === 0 && finalVy === 0 && pressure > 0) {
                                 let lE = cx > 0 && g[cIdx - 1] === MAT.EMPTY;
                                 let rE = cx < W - 1 && g[cIdx + 1] === MAT.EMPTY;
-                                if (lE && rE) finalVx = (Math.random() < 0.5 ? -1 : 1) * pressure * 0.5;
-                                else if (lE) finalVx = -pressure * 0.5;
-                                else if (rE) finalVx = pressure * 0.5;
+                                if (lE && rE) finalVx = (Math.random() < 0.5 ? -1 : 1) * pressure * 0.8;
+                                else if (lE) finalVx = -pressure * 0.8;
+                                else if (rE) finalVx = pressure * 0.8;
                             }
                             if (vyc > 6.0 && pressure > 3 && Math.random() < 0.2) finalVy = -vyc * 0.3;
                         } else {
@@ -308,22 +308,22 @@ class PhysicsEngine {
                 if (sy > 0) {
                     finalVy = 0;
                     if (t === MAT.WATER) {
-                        let force = 2.5 + pressure * 0.8;
-                        if (force > 8.0) force = 8.0;
+                        let force = 4.0 + pressure * 1.2;
+                        if (force > 12.0) force = 12.0;
                         if (cx > 0 && g[cIdx - 1] === MAT.EMPTY) finalVx -= vyc * force;
                         if (cx < W - 1 && g[cIdx + 1] === MAT.EMPTY) finalVx += vyc * force;
 
                         if (finalVx === 0 && finalVy === 0 && pressure > 0) {
                             let lE = cx > 0 && g[cIdx - 1] === MAT.EMPTY;
                             let rE = cx < W - 1 && g[cIdx + 1] === MAT.EMPTY;
-                            if (lE && rE) finalVx = (Math.random() < 0.5 ? -1 : 1) * pressure * 0.5;
-                            else if (lE) finalVx = -pressure * 0.5;
-                            else if (rE) finalVx = pressure * 0.5;
+                            if (lE && rE) finalVx = (Math.random() < 0.5 ? -1 : 1) * pressure * 0.8;
+                            else if (lE) finalVx = -pressure * 0.8;
+                            else if (rE) finalVx = pressure * 0.8;
                         }
                         if (vyc > 6.0 && pressure > 3 && Math.random() < 0.2) finalVy = -vyc * 0.3;
                     } else {
                         let sDir = finalVx > 0.1 ? 1 : (finalVx < -0.1 ? -1 : (Math.random() < 0.5 ? 1 : -1));
-                        if (tryDiag(this, t, cx, cy, cIdx, sDir, 3.0)) { cx += sDir; cy++; cIdx += W + sDir; moved = true; }
+                        if (tryDiag(this, t, cx, cy, cIdx, sDir, (t === MAT.WATER) ? 5.0 : 3.0)) { cx += sDir; cy++; cIdx += W + sDir; moved = true; }
                     }
                     break;
                 } else { finalVx *= -0.1; finalVy *= -0.1; break; }
@@ -398,8 +398,8 @@ class PhysicsEngine {
                 }
                 if (!rMoved) {
                     let d = Math.random() < 0.5 ? 1 : -1;
-                    if (tryDiag(this, t, cx, cy, cIdx, d, 4.0)) { cx += d; cy++; cIdx += W + d; rMoved = true; }
-                    else if (tryDiag(this, t, cx, cy, cIdx, -d, 4.0)) { cx -= d; cy++; cIdx += W - d; rMoved = true; }
+                    if (tryDiag(this, t, cx, cy, cIdx, d, (t === MAT.WATER) ? 6.0 : 4.0)) { cx += d; cy++; cIdx += W + d; rMoved = true; }
+                    else if (tryDiag(this, t, cx, cy, cIdx, -d, (t === MAT.WATER) ? 6.0 : 4.0)) { cx -= d; cy++; cIdx += W - d; rMoved = true; }
                     else {
                         let touchingSand = (cy + 1 < H && g[cIdx + W] === MAT.SAND) || (cy > 0 && g[cIdx - W] === MAT.SAND) || (cx > 0 && g[cIdx - 1] === MAT.SAND) || (cx < W - 1 && g[cIdx + 1] === MAT.SAND);
                         let touchingWetSand = (cy + 1 < H && g[cIdx + W] === MAT.WET_SAND) || (cy > 0 && g[cIdx - W] === MAT.WET_SAND) || (cx > 0 && g[cIdx - 1] === MAT.WET_SAND) || (cx < W - 1 && g[cIdx + 1] === MAT.WET_SAND);
@@ -452,13 +452,13 @@ class PhysicsEngine {
                         }
 
                         let lE = -1, rE = -1, lD = false, rD = false;
-                        for (let i = 1; i <= 30; i++) {
+                        for (let i = 1; i <= 60; i++) {
                             if (cx - i < 0) break;
                             let cIdxL = cy * W + (cx - i);
                             if (g[cIdxL] === MAT.SAND || g[cIdxL] === MAT.WET_SAND) break;
                             if (g[cIdxL] === MAT.EMPTY) { lE = i; if (cy + 1 < H && g[cIdxL + W] === MAT.EMPTY) lD = true; break; }
                         }
-                        for (let i = 1; i <= 30; i++) {
+                        for (let i = 1; i <= 60; i++) {
                             if (cx + i >= W) break;
                             let cIdxR = cy * W + (cx + i);
                             if (g[cIdxR] === MAT.SAND || g[cIdxR] === MAT.WET_SAND) break;
@@ -471,8 +471,8 @@ class PhysicsEngine {
                             let targetX = cx + (dir * dist), targetIdx = cy * W + targetX;
                             g[targetIdx] = MAT.WATER; g[cIdx] = MAT.EMPTY;
                             let isDown = (dir == -1 && lD) || (dir == 1 && rD);
-                            let speed = isDown ? 12.0 : 6.0;
-                            vx[targetIdx] = dir * speed; vy[targetIdx] = isDown ? 3.0 : 0;
+                            let speed = isDown ? 18.0 : 10.0;
+                            vx[targetIdx] = dir * speed; vy[targetIdx] = isDown ? 5.0 : 0;
                             vx[cIdx] = 0; vy[cIdx] = 0;
                             u[targetIdx] = 1; u[cIdx] = 1; this.addA(targetIdx); this.addA(cIdx); this.wake(cIdx);
 
@@ -480,7 +480,7 @@ class PhysicsEngine {
                                 let upI = py * W + cx;
                                 if (g[upI] === MAT.WATER) {
                                     vx[upI] = dir * speed * 0.8;
-                                    vy[upI] = 3.0;
+                                    vy[upI] = 5.0;
                                     u[upI] = 1; this.addA(upI);
                                 } else break;
                             }
