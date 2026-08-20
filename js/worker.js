@@ -1,4 +1,5 @@
 const MAT = { EMPTY: 0, SAND: 1, WATER: 2, WET_SAND: 3, DENSITY: [0, 4, 1, 4], FRICTION: [1, 0.8, 0.998, 0.6] };
+const MAX_WATER = 4;
 
 function tryDiag(engine, t, cx, cy, cIdx, dir, speed) {
     const W = engine.W, H = engine.H, g = engine.grid, vx = engine.vx, vy = engine.vy, u = engine.upd;
@@ -74,6 +75,7 @@ class PhysicsEngine {
     constructor(w, h) {
         this.W = w; this.H = h;
         this.grid = new Uint8Array(w * h);
+        this.waterVol = new Uint8Array(w * h);
         this.vx = new Float32Array(w * h);
         this.vy = new Float32Array(w * h);
         this.upd = new Uint8Array(w * h);
@@ -85,7 +87,7 @@ class PhysicsEngine {
         this.dMin = h; this.dMax = -1;
         this.tickAlt = false;
     }
-    clear() { this.grid.fill(0); this.vx.fill(0); this.vy.fill(0); this.ep.fill(0); this.epc = this.actC = this.nxtC = 0; this.paintQ.length = 0; this.dMin = 0; this.dMax = this.H - 1; }
+    clear() { this.grid.fill(0); this.waterVol.fill(0); this.vx.fill(0); this.vy.fill(0); this.ep.fill(0); this.epc = this.actC = this.nxtC = 0; this.paintQ.length = 0; this.dMin = 0; this.dMax = this.H - 1; }
     addA(i) {
         let y = (i / this.W) | 0;
         if (y < this.dMin) this.dMin = y;
@@ -205,6 +207,41 @@ class PhysicsEngine {
         }
     }
 
+    equalizePressure() {
+        const W = this.W, H = this.H, g = this.grid, wv = this.waterVol, vx = this.vx, vy = this.vy, u = this.upd;
+        for (let y = 0; y < H; y++) {
+            for (let x = 0; x < W; x++) {
+                const i = y * W + x;
+                if (g[i] !== MAT.WATER || u[i]) continue;
+                const vol = wv[i];
+                if (vol <= 1) continue;
+
+                let totalVol = vol;
+                let neighbors = [];
+                if (x > 0 && g[i - 1] === MAT.WATER) { neighbors.push(i - 1); totalVol += wv[i - 1]; }
+                if (x < W - 1 && g[i + 1] === MAT.WATER) { neighbors.push(i + 1); totalVol += wv[i + 1]; }
+                if (y > 0 && g[i - W] === MAT.WATER) { neighbors.push(i - W); totalVol += wv[i - W]; }
+                if (y < H - 1 && g[i + W] === MAT.WATER) { neighbors.push(i + W); totalVol += wv[i + W]; }
+
+                if (neighbors.length === 0) continue;
+
+                const avgVol = totalVol / (neighbors.length + 1);
+                if (vol > avgVol + 0.5) {
+                    const give = Math.min(vol - 1, (vol - avgVol) * 0.4);
+                    wv[i] -= give;
+                    const perNeighbor = give / neighbors.length;
+                    for (const ni of neighbors) {
+                        if (wv[ni] < MAX_WATER) {
+                            const take = Math.min(perNeighbor, MAX_WATER - wv[ni]);
+                            wv[ni] += take;
+                        }
+                    }
+                    vx[i] *= 0.5; vy[i] *= 0.5;
+                }
+            }
+        }
+    }
+
     paint(x, y, items) { this.paintQ.push({ x, y, items }); }
     applyPaints() {
         for (let p of this.paintQ) {
@@ -240,6 +277,7 @@ class PhysicsEngine {
                         this.grid[idx] = mat;
                         this.vx[idx] = 0;
                         this.vy[idx] = 0;
+                        if (mat === MAT.WATER) this.waterVol[idx] = MAX_WATER;
                         this.addA(idx); this.wake(idx);
                     }
                 }
@@ -252,6 +290,7 @@ class PhysicsEngine {
         this.actC = this.nxtC; this.nxtC = 0; this.epc++; this.applyPaints();
         this.applyBulkFlow();
         this.applyCohesion();
+        this.equalizePressure();
         let u = this.upd, actL = this.actL, actC = this.actC, W = this.W, dMin = this.dMin, dMax = this.dMax;
         for (let i = 0; i < actC; i++) { let idx = actL[i]; u[idx] = 0; let y = (idx / W) | 0; if (y < dMin) dMin = y; if (y > dMax) dMax = y; }
         this.dMin = dMin; this.dMax = dMax;
@@ -335,6 +374,7 @@ class PhysicsEngine {
 
             if (nt === MAT.EMPTY) {
                 g[nIdx] = t; g[cIdx] = MAT.EMPTY; u[nIdx] = 1; u[cIdx] = 1;
+                if (t === MAT.WATER) { this.waterVol[nIdx] = this.waterVol[cIdx]; this.waterVol[cIdx] = 0; }
                 cx = nx; cy = ny; cIdx = nIdx; moved = true;
             } else if (MAT.DENSITY[t] > MAT.DENSITY[nt]) {
                 if ((t === MAT.SAND || t === MAT.WET_SAND) && nt === MAT.WATER) {
@@ -393,11 +433,25 @@ class PhysicsEngine {
                     u[cIdx] = 1; u[nIdx] = 1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
                 }
             } else if (nt === MAT.WATER && t === MAT.WATER) {
-                vx[nIdx] = (vx[nIdx] + finalVx) * 0.75;
-                vy[nIdx] = (vy[nIdx] + finalVy) * 0.75;
-                finalVx *= 0.25; finalVy *= 0.25;
-                vx[cIdx] = finalVx; vy[cIdx] = finalVy;
-                u[nIdx] = 1; u[cIdx] = 1; this.addA(nIdx); this.addA(cIdx); break;
+                const combined = this.waterVol[cIdx] + this.waterVol[nIdx];
+                if (combined <= MAX_WATER) {
+                    this.waterVol[nIdx] = combined;
+                    this.waterVol[cIdx] = 0;
+                    g[nIdx] = MAT.WATER; g[cIdx] = MAT.EMPTY;
+                    vx[nIdx] = (vx[nIdx] + finalVx) * 0.75;
+                    vy[nIdx] = (vy[nIdx] + finalVy) * 0.75;
+                    finalVx *= 0.25; finalVy *= 0.25;
+                    vx[cIdx] = finalVx; vy[cIdx] = finalVy;
+                    u[nIdx] = 1; u[cIdx] = 1; this.addA(nIdx); this.addA(cIdx); break;
+                } else {
+                    this.waterVol[nIdx] = MAX_WATER;
+                    this.waterVol[cIdx] = combined - MAX_WATER;
+                    vx[nIdx] = (vx[nIdx] + finalVx) * 0.75;
+                    vy[nIdx] = (vy[nIdx] + finalVy) * 0.75;
+                    finalVx *= 0.25; finalVy *= 0.25;
+                    vx[cIdx] = finalVx; vy[cIdx] = finalVy;
+                    u[nIdx] = 1; u[cIdx] = 1; this.addA(nIdx); this.addA(cIdx); break;
+                }
             } else {
                 if (sy > 0) {
                     finalVy = 0;
