@@ -1,7 +1,7 @@
 // Main thread: input handling, worker management, stats UI, and app lifecycle.
 let worker = null;
 let sS = 100, wS = 100, mDown = false, lastX = 0, lastY = 0;
-let aC = 0, cTps = 0, counts = [0,0,0,0], fpsF = 0, fpsL = performance.now();
+let aC = 0, cTps = 0, counts = [0,0,0,0], updateMs = 0, peakMs = 0, scanMs = 0, fpsF = 0, drawL = performance.now(), fpsL = performance.now();
 let cRect = null;
 const statsDiv = document.getElementById('stats');
 const stuffChk = document.getElementById('stuffChk');
@@ -33,9 +33,13 @@ function initWorker() {
             aC = e.data.aC;
             cTps = e.data.tps;
             counts = e.data.counts;
+            updateMs = e.data.updateMs || 0;
+            peakMs = e.data.peakMs || 0;
+            scanMs = e.data.scanMs || 0;
         }
     };
-    worker.postMessage({ type: 'init', w: canvas.width, h: canvas.height, soft: SOFT });
+    const params = new URLSearchParams(location.search);
+    worker.postMessage({ type: 'init', w: canvas.width, h: canvas.height, soft: SOFT, statsMs: params.get('stats') || undefined });
 }
 
 function paint(cx, cy) {
@@ -57,7 +61,9 @@ setInterval(() => {
     let totalC = sandC + waterC + wetC;
     let totalCells = canvas.width * canvas.height;
     let emptyC = totalCells - totalC;
-    statsDiv.innerText = `FPS: ${f.toFixed(0)}\nFrame: ${ftEMA.toFixed(1)}ms\nTPS: ${cTps}\nActive: ${aC}\nUp: ${upRows} rows\nRenderer: ${RENDERER_STR}\nSand: ${sandC}\nWater: ${waterC}\nWet Sand: ${wetC}\nTotal: ${totalC}\nEmpty: ${emptyC}\nGrid: ${canvas.width}x${canvas.height}`;
+    let drawFps = (performance.now() - drawL > 0) ? (drawCount * 1000) / (performance.now() - drawL) : 0;
+    drawCount = 0; drawL = performance.now();
+    statsDiv.innerText = `FPS: ${f.toFixed(0)} / ${drawFps.toFixed(0)}d\nFrame: ${ftEMA.toFixed(1)}ms\nPhys: ${updateMs.toFixed(1)} / pk${peakMs.toFixed(1)} / sc${scanMs.toFixed(2)}\nTPS: ${cTps}\nActive: ${aC}\nUp: ${upRows} rows\nRenderer: ${RENDERER_STR}\nSand: ${sandC}\nWater: ${waterC}\nWet Sand: ${wetC}\nTotal: ${totalC}\nEmpty: ${emptyC}\nGrid: ${canvas.width}x${canvas.height}`;
 }, 500);
 
 function init() {

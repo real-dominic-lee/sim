@@ -493,18 +493,22 @@ class PhysicsEngine {
         this.addA(cIdx);
     }
 }
-let engine, lastT=0, acc=0, tpsC=0, lastTps=0, cTps=0, lastStats=0; let TPS=60, TMS=1000/TPS, SOAK_PROB=0.35, STATS_MS=500;
+let engine, lastT=0, acc=0, tpsC=0, lastTps=0, cTps=0, lastStats=0, updMs=0, peakUpdMs=0, scanMs=0; let TPS=60, TMS=1000/TPS, SOAK_PROB=0.35, STATS_MS=500;
 let counts = new Int32Array(4);
 function tick() {
     let now = performance.now(); if(lastT===0){lastT=now;lastTps=now;} let d=now-lastT; lastT=now; acc+=d;
-    let t=0; while(acc>=TMS && t<2){ engine.update(); acc-=TMS; t++; tpsC++; } if(acc>TMS*2) acc=0;
+    let t=0; let tickUpdMs=0; while(acc>=TMS && t<2){ let t0=performance.now(); engine.update(); let d2=performance.now()-t0; tickUpdMs += d2; if(d2>peakUpdMs) peakUpdMs=d2; acc-=TMS; t++; tpsC++; } if(acc>TMS*2) acc=0;
+    updMs += tickUpdMs;
     if(now-lastTps>=1000){ cTps=tpsC; tpsC=0; lastTps=now; }
     if(STATS_MS && now-lastStats>=STATS_MS){
         lastStats=now;
         counts.fill(0);
         let g=engine.grid, len=g.length;
+        let s0=performance.now();
         for(let i=0;i<len;i++) counts[g[i]]++;
-        self.postMessage({type:'stats', aC:engine.actC, tps:cTps, counts:counts});
+        scanMs = performance.now()-s0;
+        self.postMessage({type:'stats', aC:engine.actC, tps:cTps, counts:counts, updateMs:updMs, peakMs:peakUpdMs, scanMs:scanMs});
+        updMs = 0; peakUpdMs = 0; scanMs = 0;
     }
     // Send only the changed row span, in a fresh buffer. No round-trip needed.
     if(engine.dMax >= engine.dMin && engine.dMax >= 0){
@@ -523,6 +527,7 @@ self.onmessage = e => {
     const d = e.data;
     if(d.type==='init'){
         engine=new PhysicsEngine(d.w,d.h); lastT=0; lastTps=0; lastStats=0; tpsC=0;
+        if(d.statsMs){ STATS_MS = +d.statsMs|0; if(STATS_MS<50) STATS_MS=50; }
         if(d.soft){ TPS=30; TMS=1000/TPS; SOAK_PROB=0.12; }
         tick();
     }

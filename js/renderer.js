@@ -1,7 +1,7 @@
 // Renderer: WebGL2 setup, GLSL shaders, render loop, and render-queue management.
 const canvas = document.getElementById('simCanvas');
 let gl, prog, tex, vao, traceLoc, pbo;
-let pendQ = [], upRows = 0;
+let pendQ = [], upRows = 0, drawCount = 0, lastDrawTime = 0;
 let needDraw = true, lastTrace = -1, lastDraw = 0;
 let ftEMA = 0, lastFT = 0;
 
@@ -48,6 +48,10 @@ function initGL() {
     const vs = gl.createShader(gl.VERTEX_SHADER);
     gl.shaderSource(vs, `#version 300 es\nin vec2 a_pos; out vec2 v_uv; void main(){ v_uv = a_pos*0.5+0.5; v_uv.y = 1.0-v_uv.y; gl_Position = vec4(a_pos, 0.0, 1.0); }`);
     gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+        console.error('Vertex shader compile error:', gl.getShaderInfoLog(vs));
+        return false;
+    }
 
     const fs = gl.createShader(gl.FRAGMENT_SHADER);
     gl.shaderSource(fs, `#version 300 es
@@ -125,8 +129,17 @@ function initGL() {
             c = vec4(1.0, 1.0, 1.0, 1.0);
         }`);
     gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+        console.error('Fragment shader compile error:', gl.getShaderInfoLog(fs));
+        return false;
+    }
 
-    prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog); gl.useProgram(prog);
+    prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        console.error('Program link error:', gl.getProgramInfoLog(prog));
+        return false;
+    }
+    gl.useProgram(prog);
     traceLoc = gl.getUniformLocation(prog, "u_trace");
     vao = gl.createVertexArray(); gl.bindVertexArray(vao);
     const vbo = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vbo); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
@@ -157,7 +170,9 @@ function rLoop(now = performance.now()) {
             gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
             upRows = p.rows;
             needDraw = true;
-        } catch (e) {}
+        } catch (e) {
+            console.error('Render upload failed:', e);
+        }
     }
     // Only draw when something actually changed: new texture data, trace state
     // flipped, first frame, or tab was re-shown. Idle frames cost ~nothing.
@@ -168,6 +183,8 @@ function rLoop(now = performance.now()) {
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         needDraw = false;
         lastDraw = now;
+        drawCount++;
+        lastDrawTime = now;
     }
     fpsF++;
     if (lastFT) { let dt = now - lastFT; ftEMA = ftEMA ? ftEMA * 0.9 + dt * 0.1 : dt; }
