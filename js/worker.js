@@ -680,7 +680,9 @@ function tick() {
         let start = y0 * W, n = (y1 - y0 + 1) * W;
         let out = new Uint8Array(n);
         out.set(engine.grid.subarray(start, start + n));
-        self.postMessage({ type: 'render', buf: out.buffer, y0: y0, rows: y1 - y0 + 1 }, [out.buffer]);
+        let volOut = new Uint8Array(n);
+        volOut.set(engine.waterVol.subarray(start, start + n));
+        self.postMessage({ type: 'render', buf: out.buffer, volBuf: volOut.buffer, y0: y0, rows: y1 - y0 + 1 }, [out.buffer, volOut.buffer]);
         engine.dMin = H; engine.dMax = -1;
     }
     let wait = Math.max(0, TMS - acc);

@@ -4,13 +4,14 @@ const stuffChk = document.getElementById('stuffChk');
 const sandChkEl = document.getElementById('sandChk');
 const waterChkEl = document.getElementById('waterChk');
 
-let gl, prog, tex, vao, pbo;
+let gl, prog, tex, volTex, vao, pbo;
 let worker = null;
 let sS = 100, wS = 100;
 let mDown = false, lastX = 0, lastY = 0;
 let aC = 0, cTps = 0, counts = [0, 0, 0, 0];
 let fpsL = performance.now(), fpsF = 0;
 let pend = null, pendView = null, pendY0 = 0, pendRows = 0, upRows = 0;
+let volPend = null, volPendView = null;
 let cRect = null, ftEMA = 0, lastFT = 0, needDraw = true;
 
 function setupEvents() {
@@ -43,18 +44,26 @@ function initGL() {
         precision highp float;
         in vec2 v_uv;
         uniform highp usampler2D u_grid;
+        uniform highp usampler2D u_vol;
         out vec4 c;
 
         vec4 getCol(uint id) {
             if(id==1u) return vec4(0.76, 0.69, 0.5, 1.0);
-            if(id==2u) return vec4(0.35, 0.7, 1.0, 1.0);
             if(id==3u) return vec4(0.55, 0.42, 0.25, 1.0);
             return vec4(1.0, 1.0, 1.0, 1.0);
         }
 
         void main() {
             uint id = texture(u_grid, v_uv).r;
-            if (id != 0u) { c = getCol(id); return; }
+            if (id == 1u || id == 3u) { c = getCol(id); return; }
+            if (id == 2u) {
+                uint vol = texture(u_vol, v_uv).r;
+                float v = float(vol) / 4.0;
+                vec3 base = vec3(0.35, 0.7, 1.0);
+                vec3 deep = vec3(0.15, 0.4, 0.85);
+                c = vec4(mix(base, deep, v), 1.0);
+                return;
+            }
             c = vec4(1.0, 1.0, 1.0, 1.0);
         }`);
     gl.compileShader(fs);
@@ -64,6 +73,7 @@ function initGL() {
     gl.attachShader(prog, fs);
     gl.linkProgram(prog);
     gl.useProgram(prog);
+
     vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
 
@@ -84,11 +94,21 @@ function initGL() {
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8UI, canvas.width, canvas.height, 0, gl.RED_INTEGER, gl.UNSIGNED_BYTE, new Uint8Array(canvas.width * canvas.height));
     gl.uniform1i(gl.getUniformLocation(prog, "u_grid"), 0);
-    gl.uniform2f(gl.getUniformLocation(prog, "u_texelSize"), 1.0 / canvas.width, 1.0 / canvas.height);
+
+    volTex = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, volTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8UI, canvas.width, canvas.height, 0, gl.RED_INTEGER, gl.UNSIGNED_BYTE, new Uint8Array(canvas.width * canvas.height));
+    gl.uniform1i(gl.getUniformLocation(prog, "u_vol"), 1);
 
     pbo = gl.createBuffer();
     gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, pbo);
-    gl.bufferData(gl.PIXEL_UNPACK_BUFFER, canvas.width * canvas.height, gl.STREAM_DRAW);
+    gl.bufferData(gl.PIXEL_UNPACK_BUFFER, canvas.width * canvas.height * 2, gl.STREAM_DRAW);
     gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
 
     return true;
@@ -102,6 +122,10 @@ function initWorker() {
             pendView = new Uint8Array(pend);
             pendY0 = e.data.y0;
             pendRows = e.data.rows;
+            if (e.data.volBuf) {
+                volPend = e.data.volBuf;
+                volPendView = new Uint8Array(volPend);
+            }
         } else if (e.data.type === 'stats') {
             aC = e.data.aC;
             cTps = e.data.tps;
@@ -118,11 +142,16 @@ function rLoop(now) {
             gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, pbo);
             gl.bufferSubData(gl.PIXEL_UNPACK_BUFFER, 0, pendView);
             gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, pendY0, canvas.width, pendRows, gl.RED_INTEGER, gl.UNSIGNED_BYTE, 0);
+            if (volPend) {
+                gl.bufferSubData(gl.PIXEL_UNPACK_BUFFER, canvas.width * canvas.height, volPendView);
+                gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, pendY0, canvas.width, pendRows, gl.RED_INTEGER, gl.UNSIGNED_BYTE, canvas.width * canvas.height);
+            }
             gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
             upRows = pendRows;
             needDraw = true;
         } catch (e) {}
         pend = null; pendView = null;
+        volPend = null; volPendView = null;
     }
     if (needDraw) {
         gl.drawArrays(gl.TRIANGLES, 0, 3);
