@@ -547,7 +547,7 @@ class PhysicsEngine {
                         let temp = candidates[i]; candidates[i] = candidates[j]; candidates[j] = temp;
                     }
 
-                    let spawnCount = Math.min(s * 7.5, candidates.length);
+                    let spawnCount = Math.min(s * 50, candidates.length);
                     if (mat === MAT.WATER && this.sphWater) {
                         let cx = p.x, cy = p.y;
                         let rad = Math.max(2, Math.ceil(Math.sqrt(spawnCount)) * 0.4);
@@ -667,9 +667,10 @@ class PhysicsEngine {
                 if (t === MAT.WATER) { this.waterVol[nIdx] = this.waterVol[cIdx]; this.waterVol[cIdx] = 0; }
                 cx = nx; cy = ny; cIdx = nIdx; moved = true;
             } else if (MAT.DENSITY[t] > MAT.DENSITY[nt]) {
-                if ((t === MAT.SAND || t === MAT.WET_SAND) && nt === MAT.WATER) {
-                    if (t === MAT.SAND) { g[cIdx] = MAT.EMPTY; this.waterVol[cIdx] = 0; g[nIdx] = MAT.WET_SAND; }
-                    else { g[cIdx] = MAT.WATER; this.waterVol[cIdx] = MAX_WATER; g[nIdx] = MAT.WET_SAND; vy[cIdx] = -1.5; }
+                if (t === MAT.SAND && nt === MAT.WATER) {
+                    g[nIdx] = MAT.WET_SAND;
+                    g[cIdx] = MAT.WATER; this.waterVol[cIdx] = this.waterVol[nIdx]; this.waterVol[nIdx] = 0;
+                    vy[cIdx] = -1.5;
                     vx[cIdx] = 0; vy[cIdx] = 0;
                     u[nIdx] = 1; u[cIdx] = 1; this.addA(nIdx); this.addA(cIdx); this.wake(nIdx); this.wake(cIdx);
                     return;
@@ -781,6 +782,7 @@ class PhysicsEngine {
                     let bIdx = cIdx + W;
                     let bType = g[bIdx];
                     g[bIdx] = t; g[cIdx] = bType;
+                    if (bType === MAT.WATER) { let tv = this.waterVol[bIdx]; this.waterVol[bIdx] = this.waterVol[cIdx]; this.waterVol[cIdx] = tv; }
                     vy[bIdx] = vy[cIdx] + 1.2; vx[bIdx] = vx[cIdx];
                     vx[cIdx] = 0; vy[cIdx] = bType === MAT.WATER ? -1.0 : 0;
                     u[bIdx] = 1; u[cIdx] = 1; this.addA(bIdx); this.wake(cIdx); cIdx = bIdx; cy++; rMoved = true;
