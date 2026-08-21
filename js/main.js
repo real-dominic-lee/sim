@@ -4,7 +4,7 @@ const stuffChk = document.getElementById('stuffChk');
 const sandChkEl = document.getElementById('sandChk');
 const waterChkEl = document.getElementById('waterChk');
 
-let gl, prog, tex, volTex, vao, pbo;
+let gl, prog, tex, volTex, vao, pbo, watProg;
 let sphProg, sphVao, sphVbo, sphParticleTex;
 let worker = null;
 let sS = 100, wS = 100;
@@ -115,6 +115,49 @@ function initGL() {
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8UI, canvas.width, canvas.height, 0, gl.RED_INTEGER, gl.UNSIGNED_BYTE, new Uint8Array(canvas.width * canvas.height));
     gl.uniform1i(gl.getUniformLocation(prog, "u_vol"), 1);
+
+    // Water 4px overlay pass
+    const watVs = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(watVs, `#version 300 es\nin vec2 a_pos; out vec2 v_uv; void main(){ v_uv = a_pos*0.5+0.5; v_uv.y = 1.0-v_uv.y; gl_Position = vec4(a_pos, 0.0, 1.0); }`);
+    gl.compileShader(watVs);
+    if (!gl.getShaderParameter(watVs, gl.COMPILE_STATUS)) { console.error('WAT VS error:', gl.getShaderInfoLog(watVs)); return false; }
+
+    const watFs = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(watFs, `#version 300 es
+        precision highp float;
+        in vec2 v_uv;
+        uniform highp usampler2D u_grid;
+        uniform vec2 u_texel;
+        uniform float u_scale;
+        out vec4 c;
+        void main() {
+            // Sample a u_scale x u_scale block of grid cells. If any is water,
+            // paint water color over the block - makes water look 4px while
+            // sand stays 1px and no water is ever lost.
+            vec2 px = v_uv * vec2(textureSize(u_grid, 0));
+            vec2 base = floor(px / u_scale) * u_scale;
+            bool hit = false;
+            for (float dy = 0.0; dy < u_scale; dy += 1.0) {
+                for (float dx = 0.0; dx < u_scale; dx += 1.0) {
+                    uint id = texture(u_grid, (base + vec2(dx, dy) + 0.5) * u_texel).r;
+                    if (id == 2u) { hit = true; }
+                }
+            }
+            if (hit) c = vec4(0.35, 0.7, 1.0, 1.0);
+            else c = vec4(0.0, 0.0, 0.0, 0.0);
+        }`);
+    gl.compileShader(watFs);
+    if (!gl.getShaderParameter(watFs, gl.COMPILE_STATUS)) { console.error('WAT FS error:', gl.getShaderInfoLog(watFs)); return false; }
+
+    watProg = gl.createProgram();
+    gl.attachShader(watProg, watVs);
+    gl.attachShader(watProg, watFs);
+    gl.linkProgram(watProg);
+    if (!gl.getProgramParameter(watProg, gl.LINK_STATUS)) { console.error('WAT link error:', gl.getProgramInfoLog(watProg)); return false; }
+    gl.useProgram(watProg);
+    gl.uniform1i(gl.getUniformLocation(watProg, "u_grid"), 0);
+    gl.uniform2f(gl.getUniformLocation(watProg, "u_texel"), 1.0 / canvas.width, 1.0 / canvas.height);
+    gl.uniform1f(gl.getUniformLocation(watProg, "u_scale"), 4.0);
 
     // SPH particle rendering
     const sphVs = gl.createShader(gl.VERTEX_SHADER);
@@ -233,6 +276,12 @@ function rLoop(now) {
         gl.bindVertexArray(vao);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         needDraw = false;
+        // Water 4px overlay: draws water as 4x4 blocks over the base render.
+        if (watProg) {
+            gl.useProgram(watProg);
+            gl.bindVertexArray(vao);
+            gl.drawArrays(gl.TRIANGLES, 0, 3);
+        }
     }
     if (sphPend && sphPend.count > 0) {
         console.log('SPH render:', sphPend.count, 'particles, first:', sphPend.xs[0], sphPend.ys[0]);

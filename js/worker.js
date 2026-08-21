@@ -268,18 +268,22 @@ function tryDiag(engine, t, cx, cy, cIdx, dir, speed) {
         let canDown = (dType === MAT.EMPTY) || (dType === MAT.WATER && MAT.DENSITY[t] > MAT.DENSITY[MAT.WATER]);
         if (canSide && canDown) {
             if (t === MAT.SAND && dType === MAT.WATER) {
-                g[dIdx] = MAT.WET_SAND; g[cIdx] = MAT.EMPTY;
+                // Sand sinks into water; displaced water moves up into the
+                // vacated cell (volume conserved, cell marked WATER not EMPTY).
+                g[dIdx] = MAT.WET_SAND;
+                g[cIdx] = MAT.WATER; vy[cIdx] = -1.5;
                 engine.waterVol[cIdx] = engine.waterVol[dIdx]; engine.waterVol[dIdx] = 0;
                 vx[cIdx] = 0; vy[cIdx] = 0;
             } else {
+                let mv = (t === MAT.WATER) ? engine.waterVol[cIdx] : 0;
                 g[dIdx] = t;
                 if (dType === MAT.WATER) {
                     g[cIdx] = MAT.WATER; vy[cIdx] = -1.5;
                     engine.waterVol[cIdx] = engine.waterVol[dIdx];
-                    engine.waterVol[dIdx] = 0;
                 } else {
                     g[cIdx] = MAT.EMPTY; vx[cIdx] = 0; vy[cIdx] = 0;
                 }
+                engine.waterVol[dIdx] = mv;
                 vx[dIdx] = dir * speed; vy[dIdx] = 0;
             }
             u[dIdx] = 1; u[cIdx] = 1; engine.addA(dIdx); engine.addA(cIdx); engine.wake(cIdx);
@@ -299,18 +303,20 @@ function tryDensitySlide(engine, t, cx, cy, cIdx, dir) {
         let canDown = (dType === MAT.EMPTY) || (dType === MAT.WATER && MAT.DENSITY[t] > MAT.DENSITY[MAT.WATER]);
         if (canSide && canDown) {
             if (t === MAT.SAND && dType === MAT.WATER) {
-                g[dIdx] = MAT.WET_SAND; g[cIdx] = MAT.EMPTY;
+                g[dIdx] = MAT.WET_SAND;
+                g[cIdx] = MAT.WATER; vy[cIdx] = -1.5;
                 engine.waterVol[cIdx] = engine.waterVol[dIdx]; engine.waterVol[dIdx] = 0;
                 vx[cIdx] = 0; vy[cIdx] = 0;
             } else {
+                let mv = (t === MAT.WATER) ? engine.waterVol[cIdx] : 0;
                 g[dIdx] = t;
                 if (dType === MAT.WATER) {
                     g[cIdx] = MAT.WATER; vy[cIdx] = -1.5;
                     engine.waterVol[cIdx] = engine.waterVol[dIdx];
-                    engine.waterVol[dIdx] = 0;
                 } else {
                     g[cIdx] = MAT.EMPTY; vx[cIdx] = 0; vy[cIdx] = 0;
                 }
+                engine.waterVol[dIdx] = mv;
                 vy[dIdx] = 0; vx[dIdx] = dir * 1.5;
             }
             u[dIdx] = 1; u[cIdx] = 1; engine.addA(dIdx); engine.addA(cIdx); engine.wake(cIdx);
@@ -328,6 +334,10 @@ function tryRoll(engine, t, cx, cy, cIdx, dir) {
     if (g[hIdx] === MAT.EMPTY && g[dIdx] === t) {
         if (Math.random() < 0.2) {
             g[hIdx] = t; g[cIdx] = MAT.EMPTY;
+            if (t === MAT.WATER) {
+                engine.waterVol[hIdx] = Math.min(MAX_WATER, engine.waterVol[hIdx] + engine.waterVol[cIdx]);
+                engine.waterVol[cIdx] = 0;
+            }
             vx[hIdx] = dir * 2.5; vy[hIdx] = -0.2;
             u[hIdx] = 1; u[cIdx] = 1; engine.addA(hIdx); engine.wake(cIdx);
             return true;
@@ -524,42 +534,33 @@ class PhysicsEngine {
             for (let item of p.items) {
                 let mat = item.mat, s = item.size;
                 if (s > 0) {
-                    let r = Math.ceil(Math.sqrt(s));
-                    let r2 = s;
-                    let candidates = [];
-
-                    for (let dy = -r; dy <= r; dy++) {
-                        for (let dx = -r; dx <= r; dx++) {
-                            if (dx * dx + dy * dy <= r2) {
-                                let nx = p.x + dx, ny = p.y + dy;
-                                if (nx >= 0 && nx < this.W && ny >= 0 && ny < this.H) {
-                                    let idx = ny * this.W + nx;
-                                    if (this.grid[idx] === MAT.EMPTY) {
-                                        candidates.push(idx);
-                                    }
-                                }
+                    let spawnCount = Math.min(s * 50, this.W * this.H);
+                    // Spawn in a vertical column below the cursor so it falls
+                    // straight down instead of exploding outward in a circle.
+                    let colW = Math.ceil(Math.sqrt(spawnCount));
+                    let startX = Math.max(0, Math.min(this.W - colW, p.x - (colW >> 1)));
+                    let y = p.y;
+                    let spawned = 0;
+                    for (let c = 0; c < colW && spawned < spawnCount; c++) {
+                        let x = startX + c;
+                        for (let row = 0; row < colW && spawned < spawnCount; row++) {
+                            let ny = y + row;
+                            if (ny >= this.H) break;
+                            let idx = ny * this.W + x;
+                            if (this.grid[idx] === MAT.EMPTY) {
+                                this.grid[idx] = mat;
+                                this.vx[idx] = 0;
+                                this.vy[idx] = 0;
+                                if (mat === MAT.WATER) this.waterVol[idx] = MAX_WATER;
+                                this.addA(idx); this.wake(idx);
+                                spawned++;
+                            } else if (mat === MAT.WATER && this.grid[idx] === MAT.WATER && this.waterVol[idx] < MAX_WATER) {
+                                // Spawning on existing water: top it up instead of
+                                // skipping, so the count isn't silently lost.
+                                this.waterVol[idx] = MAX_WATER;
+                                this.addA(idx);
+                                spawned++;
                             }
-                        }
-                    }
-
-                    for (let i = candidates.length - 1; i > 0; i--) {
-                        let j = (Math.random() * (i + 1)) | 0;
-                        let temp = candidates[i]; candidates[i] = candidates[j]; candidates[j] = temp;
-                    }
-
-                    let spawnCount = Math.min(s * 50, candidates.length);
-                    if (mat === MAT.WATER && this.sphWater) {
-                        let cx = p.x, cy = p.y;
-                        let rad = Math.max(2, Math.ceil(Math.sqrt(spawnCount)) * 0.4);
-                        this.sphWater.addCircle(cx, cy, rad, spawnCount);
-                    } else {
-                        for (let i = 0; i < spawnCount; i++) {
-                            let idx = candidates[i];
-                            this.grid[idx] = mat;
-                            this.vx[idx] = 0;
-                            this.vy[idx] = 0;
-                            if (mat === MAT.WATER) this.waterVol[idx] = MAX_WATER;
-                            this.addA(idx); this.wake(idx);
                         }
                     }
                 }
