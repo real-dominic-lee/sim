@@ -128,18 +128,18 @@ function initGL() {
         in vec2 v_uv;
         uniform highp usampler2D u_grid;
         uniform vec2 u_texel;
-        uniform float u_scale;
+        uniform int u_scale;
         out vec4 c;
         void main() {
             // Sample a u_scale x u_scale block of grid cells. If any is water,
             // paint water color over the block - makes water look 4px while
             // sand stays 1px and no water is ever lost.
-            vec2 px = v_uv * vec2(textureSize(u_grid, 0));
-            vec2 base = floor(px / u_scale) * u_scale;
+            ivec2 px = ivec2(v_uv * vec2(textureSize(u_grid, 0)));
+            ivec2 base = (px / u_scale) * u_scale;
             bool hit = false;
-            for (float dy = 0.0; dy < u_scale; dy += 1.0) {
-                for (float dx = 0.0; dx < u_scale; dx += 1.0) {
-                    uint id = texture(u_grid, (base + vec2(dx, dy) + 0.5) * u_texel).r;
+            for (int dy = 0; dy < u_scale; dy++) {
+                for (int dx = 0; dx < u_scale; dx++) {
+                    uint id = texture(u_grid, (vec2(base) + vec2(dx, dy) + 0.5) * u_texel).r;
                     if (id == 2u) { hit = true; }
                 }
             }
@@ -157,7 +157,7 @@ function initGL() {
     gl.useProgram(watProg);
     gl.uniform1i(gl.getUniformLocation(watProg, "u_grid"), 0);
     gl.uniform2f(gl.getUniformLocation(watProg, "u_texel"), 1.0 / canvas.width, 1.0 / canvas.height);
-    gl.uniform1f(gl.getUniformLocation(watProg, "u_scale"), 4.0);
+    gl.uniform1i(gl.getUniformLocation(watProg, "u_scale"), 4);
 
     // SPH particle rendering
     const sphVs = gl.createShader(gl.VERTEX_SHADER);
@@ -280,7 +280,10 @@ function rLoop(now) {
         if (watProg) {
             gl.useProgram(watProg);
             gl.bindVertexArray(vao);
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
             gl.drawArrays(gl.TRIANGLES, 0, 3);
+            gl.disable(gl.BLEND);
         }
     }
     if (sphPend && sphPend.count > 0) {
