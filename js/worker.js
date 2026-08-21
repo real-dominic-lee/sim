@@ -719,10 +719,12 @@ class PhysicsEngine {
                     if (sy > 0) {
                         finalVy = 0;
                         if (t === MAT.WATER) {
-                            let force = 4.0 + pressure * 1.2;
-                            if (force > 12.0) force = 12.0;
-                            if (cx > 0 && g[cIdx - 1] === MAT.EMPTY) finalVx -= vyc * force;
-                            if (cx < W - 1 && g[cIdx + 1] === MAT.EMPTY) finalVx += vyc * force;
+                            // Spread sideways as a liquid, not an explosion.
+                            // vyc can be ~30 at terminal velocity, so vyc*force
+                            // was throwing water out at hundreds of px/tick.
+                            let spread = Math.min(3.0, vyc * 0.15);
+                            if (cx > 0 && g[cIdx - 1] === MAT.EMPTY) finalVx -= spread;
+                            if (cx < W - 1 && g[cIdx + 1] === MAT.EMPTY) finalVx += spread;
 
                             if (finalVx === 0 && finalVy === 0 && pressure > 0) {
                                 let lE = cx > 0 && g[cIdx - 1] === MAT.EMPTY;
@@ -751,10 +753,9 @@ class PhysicsEngine {
                 if (sy > 0) {
                     finalVy = 0;
                     if (t === MAT.WATER) {
-                        let force = 4.0 + pressure * 1.2;
-                        if (force > 12.0) force = 12.0;
-                        if (cx > 0 && g[cIdx - 1] === MAT.EMPTY) finalVx -= vyc * force;
-                        if (cx < W - 1 && g[cIdx + 1] === MAT.EMPTY) finalVx += vyc * force;
+                        let spread = Math.min(3.0, vyc * 0.15);
+                        if (cx > 0 && g[cIdx - 1] === MAT.EMPTY) finalVx -= spread;
+                        if (cx < W - 1 && g[cIdx + 1] === MAT.EMPTY) finalVx += spread;
 
                         if (finalVx === 0 && finalVy === 0 && pressure > 0) {
                             let lE = cx > 0 && g[cIdx - 1] === MAT.EMPTY;
