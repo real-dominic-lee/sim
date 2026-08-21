@@ -1,5 +1,262 @@
 const MAT = { EMPTY: 0, SAND: 1, WATER: 2, WET_SAND: 3, DENSITY: [0, 4, 1, 4], FRICTION: [1, 0.8, 0.998, 0.6] };
 const MAX_WATER = 4;
+const USE_SPH_WATER = false;
+
+const { SPHWater } = (() => {
+    const h = 8.0;
+    const h2 = h * h;
+    const mass = 1.0;
+    const restDensity = 2.0;
+    const stiffness = 0.06;
+    const nearStiffness = 0.02;
+    const viscositySigma = 0.01;
+    const viscosityBeta = 0.008;
+    const gravity = 10800.0;
+    const damping = 0.99;
+    const boundaryDamping = 0.001;
+    const maxParticles = 8000;
+
+    class SpatialHash {
+        constructor(cellSize, width, height) {
+            this.cellSize = cellSize;
+            this.cols = Math.ceil(width / cellSize);
+            this.rows = Math.ceil(height / cellSize);
+            this.grid = new Array(this.cols * this.rows);
+            for (let i = 0; i < this.grid.length; i++) this.grid[i] = [];
+        }
+        clear() {
+            for (let i = 0; i < this.grid.length; i++) this.grid[i].length = 0;
+        }
+        getIndex(x, y) {
+            const cx = Math.floor(x / this.cellSize);
+            const cy = Math.floor(y / this.cellSize);
+            if (cx < 0 || cx >= this.cols || cy < 0 || cy >= this.rows) return -1;
+            return cy * this.cols + cx;
+        }
+        add(particle, idx) {
+            const i = this.getIndex(particle.x, particle.y);
+            if (i >= 0) this.grid[i].push(idx);
+        }
+        getNeighbors(particle, out) {
+            const cx = Math.floor(particle.x / this.cellSize);
+            const cy = Math.floor(particle.y / this.cellSize);
+            out.length = 0;
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    const nx = cx + dx, ny = cy + dy;
+                    if (nx < 0 || nx >= this.cols || ny < 0 || ny >= this.rows) continue;
+                    const cell = this.grid[ny * this.cols + nx];
+                    for (let k = 0; k < cell.length; k++) out.push(cell[k]);
+                }
+            }
+        }
+    }
+
+    class Particle {
+        constructor(x, y, vx = 0, vy = 0) {
+            this.x = x; this.y = y;
+            this.vx = vx; this.vy = vy;
+            this.density = 0; this.nearDensity = 0;
+            this.pressure = 0; this.nearPressure = 0;
+            this.fx = 0; this.fy = 0;
+        }
+    }
+
+    class SPHWater {
+        constructor(width, height, gridRef) {
+            this.width = width;
+            this.height = height;
+            this.grid = gridRef;
+            this.particles = [];
+            this.hash = new SpatialHash(h, width, height);
+            this.neighbors = [];
+            this.predX = new Float32Array(maxParticles);
+            this.predY = new Float32Array(maxParticles);
+        }
+
+        addParticle(x, y, vx = 0, vy = 0) {
+            if (this.particles.length >= maxParticles) return false;
+            this.particles.push(new Particle(x, y, vx, vy));
+            return true;
+        }
+
+        addCircle(cx, cy, r, count, vx = 0, vy = 0) {
+            console.log('SPH addCircle:', count, 'at', cx, cy, 'r=', r);
+            for (let i = 0; i < count && this.particles.length < maxParticles; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const radius = Math.sqrt(Math.random()) * r;
+                this.particles.push(new Particle(
+                    cx + Math.cos(angle) * radius,
+                    cy + Math.sin(angle) * radius,
+                    vx + (Math.random() - 0.5) * 0.5,
+                    vy + (Math.random() - 0.5) * 0.5
+                ));
+            }
+        }
+
+        clear() {
+            this.particles.length = 0;
+        }
+
+        step(dt) {
+            const p = this.particles;
+            const n = p.length;
+            if (n === 0) return;
+
+            this.hash.clear();
+            for (let i = 0; i < n; i++) this.hash.add(p[i], i);
+
+            for (let i = 0; i < n; i++) {
+                const pi = p[i];
+                pi.fx = 0; pi.fy = 0;
+                pi.density = 0; pi.nearDensity = 0;
+
+                this.hash.getNeighbors(pi, this.neighbors);
+                for (let k = 0; k < this.neighbors.length; k++) {
+                    const j = this.neighbors[k];
+                    if (j === i) continue;
+                    const pj = p[j];
+                    const dx = pj.x - pi.x;
+                    const dy = pj.y - pi.y;
+                    const r2 = dx * dx + dy * dy;
+                    if (r2 >= h2 || r2 === 0) continue;
+                    const r = Math.sqrt(r2);
+                    const invR = 1.0 / r;
+                    const nx = dx * invR;
+                    const ny = dy * invR;
+
+                    const q = 1.0 - r / h;
+                    const q2 = q * q;
+                    const q3 = q2 * q;
+                    pi.density += q2 * mass;
+                    pj.density += q2 * mass;
+                    pi.nearDensity += q3 * mass;
+                    pj.nearDensity += q3 * mass;
+                }
+
+                pi.pressure = stiffness * (pi.density - restDensity);
+                pi.nearPressure = nearStiffness * pi.nearDensity;
+            }
+
+            for (let i = 0; i < n; i++) {
+                const pi = p[i];
+                this.hash.getNeighbors(pi, this.neighbors);
+                for (let k = 0; k < this.neighbors.length; k++) {
+                    const j = this.neighbors[k];
+                    if (j <= i) continue;
+                    const pj = p[j];
+                    const dx = pj.x - pi.x;
+                    const dy = pj.y - pi.y;
+                    const r2 = dx * dx + dy * dy;
+                    if (r2 >= h2 || r2 === 0) continue;
+                    const r = Math.sqrt(r2);
+                    const invR = 1.0 / r;
+                    const nx = dx * invR;
+                    const ny = dy * invR;
+
+                    const q = 1.0 - r / h;
+                    const q2 = q * q;
+
+                    const D = (pi.pressure + pj.pressure) * 0.5 * q + (pi.nearPressure + pj.nearPressure) * 0.5 * q * q;
+                    const fx = D * nx * 0.5;
+                    const fy = D * ny * 0.5;
+                    pi.fx += fx; pi.fy += fy;
+                    pj.fx -= fx; pj.fy -= fy;
+
+                    const dvx = pj.vx - pi.vx;
+                    const dvy = pj.vy - pi.vy;
+                    const u = dvx * nx + dvy * ny;
+                    if (u > 0) {
+                        const I = q * (viscositySigma * u + viscosityBeta * u * u) * 0.5 * dt;
+                        const ivx = I * nx;
+                        const ivy = I * ny;
+                        pi.vx += ivx; pi.vy += ivy;
+                        pj.vx -= ivx; pj.vy -= ivy;
+                    }
+                }
+            }
+
+            const W = this.width, H = this.height;
+            const grid = this.grid;
+            for (let i = 0; i < n; i++) {
+                const pi = p[i];
+                pi.vx += pi.fx * dt;
+                pi.vy += pi.fy * dt;
+                pi.vy += gravity * dt;
+
+                if (!isFinite(pi.vx)) pi.vx = 0;
+                if (!isFinite(pi.vy)) pi.vy = 0;
+
+                this.predX[i] = pi.x + pi.vx * dt;
+                this.predY[i] = pi.y + pi.vy * dt;
+
+                let px = this.predX[i];
+                let py = this.predY[i];
+
+                if (!isFinite(px)) px = h;
+                if (!isFinite(py)) py = h;
+
+                if (px < h) { px = h; pi.vx *= -boundaryDamping; }
+                if (px > W - h) { px = W - h; pi.vx *= -boundaryDamping; }
+                if (py < h) { py = h; pi.vy = Math.max(0, pi.vy); }
+                if (py > H - h) { py = H - h; pi.vy *= -boundaryDamping; }
+
+                // Grid collision: sample grid at particle position
+                const gx = Math.floor(px);
+                const gy = Math.floor(py);
+                if (gx >= 0 && gx < W && gy >= 0 && gy < H) {
+                    const gIdx = gy * W + gx;
+                    const gType = grid[gIdx];
+                    if (gType !== 0 && gType !== 2) { // solid: sand (1), wet sand (3)
+                        // Push out along velocity normal
+                        const speed = Math.sqrt(pi.vx * pi.vx + pi.vy * pi.vy);
+                        if (speed > 0.01) {
+                            const nx = pi.vx / speed;
+                            const ny = pi.vy / speed;
+                            // Step back slightly until clear (1-2 steps max)
+                            for (let step = 0; step < 2; step++) {
+                                px -= nx * 0.5;
+                                py -= ny * 0.5;
+                                const gx2 = Math.floor(px);
+                                const gy2 = Math.floor(py);
+                                if (gx2 < 0 || gx2 >= W || gy2 < 0 || gy2 >= H) break;
+                                if (grid[gy2 * W + gx2] === 0 || grid[gy2 * W + gx2] === 2) break;
+                            }
+                            // Slight velocity dampen, minimal reflection
+                            pi.vx *= 0.95;
+                            pi.vy *= 0.95;
+                        } else {
+                            // No velocity, tiny nudge
+                            py -= 0.1;
+                            pi.vy = -0.5;
+                        }
+                    }
+                }
+
+                pi.x = px; pi.y = py;
+            }
+
+            for (let i = 0; i < n; i++) {
+                const pi = p[i];
+                pi.vx *= damping;
+                pi.vy *= damping;
+            }
+        }
+
+        getParticleData() {
+            const n = this.particles.length;
+            const xs = new Float32Array(n);
+            const ys = new Float32Array(n);
+            for (let i = 0; i < n; i++) {
+                xs[i] = this.particles[i].x;
+                ys[i] = this.particles[i].y;
+            }
+            return { xs, ys, count: n };
+        }
+    }
+
+    return { SPHWater, h, maxParticles };
+})();
 
 function tryDiag(engine, t, cx, cy, cIdx, dir, speed) {
     const W = engine.W, H = engine.H, g = engine.grid, vx = engine.vx, vy = engine.vy, u = engine.upd;
@@ -11,11 +268,15 @@ function tryDiag(engine, t, cx, cy, cIdx, dir, speed) {
         let canDown = (dType === MAT.EMPTY) || (dType === MAT.WATER && MAT.DENSITY[t] > MAT.DENSITY[MAT.WATER]);
         if (canSide && canDown) {
             if (t === MAT.SAND && dType === MAT.WATER) {
-                g[dIdx] = MAT.WET_SAND; g[cIdx] = MAT.EMPTY; vx[cIdx] = 0; vy[cIdx] = 0;
+                g[dIdx] = MAT.WET_SAND; g[cIdx] = MAT.EMPTY;
+                engine.waterVol[cIdx] = engine.waterVol[dIdx]; engine.waterVol[dIdx] = 0;
+                vx[cIdx] = 0; vy[cIdx] = 0;
             } else {
                 g[dIdx] = t;
                 if (dType === MAT.WATER) {
                     g[cIdx] = MAT.WATER; vy[cIdx] = -1.5;
+                    engine.waterVol[cIdx] = engine.waterVol[dIdx];
+                    engine.waterVol[dIdx] = 0;
                 } else {
                     g[cIdx] = MAT.EMPTY; vx[cIdx] = 0; vy[cIdx] = 0;
                 }
@@ -38,11 +299,15 @@ function tryDensitySlide(engine, t, cx, cy, cIdx, dir) {
         let canDown = (dType === MAT.EMPTY) || (dType === MAT.WATER && MAT.DENSITY[t] > MAT.DENSITY[MAT.WATER]);
         if (canSide && canDown) {
             if (t === MAT.SAND && dType === MAT.WATER) {
-                g[dIdx] = MAT.WET_SAND; g[cIdx] = MAT.EMPTY; vx[cIdx] = 0; vy[cIdx] = 0;
+                g[dIdx] = MAT.WET_SAND; g[cIdx] = MAT.EMPTY;
+                engine.waterVol[cIdx] = engine.waterVol[dIdx]; engine.waterVol[dIdx] = 0;
+                vx[cIdx] = 0; vy[cIdx] = 0;
             } else {
                 g[dIdx] = t;
                 if (dType === MAT.WATER) {
                     g[cIdx] = MAT.WATER; vy[cIdx] = -1.5;
+                    engine.waterVol[cIdx] = engine.waterVol[dIdx];
+                    engine.waterVol[dIdx] = 0;
                 } else {
                     g[cIdx] = MAT.EMPTY; vx[cIdx] = 0; vy[cIdx] = 0;
                 }
@@ -86,8 +351,12 @@ class PhysicsEngine {
         this.epc = 0; this.actC = 0; this.nxtC = 0; this.paintQ = [];
         this.dMin = h; this.dMax = -1;
         this.tickAlt = false;
+
+        if (USE_SPH_WATER) {
+            this.sphWater = new SPHWater(w, h, this.grid);
+        }
     }
-    clear() { this.grid.fill(0); this.waterVol.fill(0); this.vx.fill(0); this.vy.fill(0); this.ep.fill(0); this.epc = this.actC = this.nxtC = 0; this.paintQ.length = 0; this.dMin = 0; this.dMax = this.H - 1; }
+    clear() { this.grid.fill(0); this.waterVol.fill(0); this.vx.fill(0); this.vy.fill(0); this.ep.fill(0); this.epc = this.actC = this.nxtC = 0; this.paintQ.length = 0; this.dMin = 0; this.dMax = this.H - 1; if (this.sphWater) this.sphWater.clear(); }
     addA(i) {
         let y = (i / this.W) | 0;
         if (y < this.dMin) this.dMin = y;
@@ -188,18 +457,23 @@ class PhysicsEngine {
 
                 if (bestDir !== 0 && bestP > 2.0) {
                     const speed = 4.0 + bestP * 0.6;
+                    const vol = this.waterVol[i];
                     if (bestDir < 0) {
                         g[i - 1] = MAT.WATER; g[i] = MAT.EMPTY;
+                        this.waterVol[i - 1] = vol; this.waterVol[i] = 0;
                         vx[i - 1] = -speed; vy[i - 1] = 0;
                         u[i - 1] = 1; u[i] = 1; this.addA(i - 1); this.wake(i);
                     } else {
                         g[i + 1] = MAT.WATER; g[i] = MAT.EMPTY;
+                        this.waterVol[i + 1] = vol; this.waterVol[i] = 0;
                         vx[i + 1] = speed; vy[i + 1] = 0;
                         u[i + 1] = 1; u[i] = 1; this.addA(i + 1); this.wake(i);
                     }
                 } else if (bestDir === 0 && bestP > 2.0) {
                     const speed = 6.0 + bestP * 0.4;
+                    const vol = this.waterVol[i];
                     g[i + W] = MAT.WATER; g[i] = MAT.EMPTY;
+                    this.waterVol[i + W] = vol; this.waterVol[i] = 0;
                     vx[i + W] = 0; vy[i + W] = speed;
                     u[i + W] = 1; u[i] = 1; this.addA(i + W); this.wake(i);
                 }
@@ -227,7 +501,10 @@ class PhysicsEngine {
 
                 const avgVol = totalVol / (neighbors.length + 1);
                 if (vol > avgVol + 0.5) {
-                    const give = Math.min(vol - 1, (vol - avgVol) * 0.4);
+                    let give = Math.min(vol - 1, (vol - avgVol) * 0.4);
+                    let cap = 0;
+                    for (const ni of neighbors) cap += MAX_WATER - wv[ni];
+                    give = Math.min(give, cap);
                     wv[i] -= give;
                     const perNeighbor = give / neighbors.length;
                     for (const ni of neighbors) {
@@ -271,14 +548,20 @@ class PhysicsEngine {
                         let temp = candidates[i]; candidates[i] = candidates[j]; candidates[j] = temp;
                     }
 
-                    let spawnCount = Math.min(s, candidates.length);
-                    for (let i = 0; i < spawnCount; i++) {
-                        let idx = candidates[i];
-                        this.grid[idx] = mat;
-                        this.vx[idx] = 0;
-                        this.vy[idx] = 0;
-                        if (mat === MAT.WATER) this.waterVol[idx] = MAX_WATER;
-                        this.addA(idx); this.wake(idx);
+                    let spawnCount = Math.min(s * 1.5, candidates.length);
+                    if (mat === MAT.WATER && this.sphWater) {
+                        let cx = p.x, cy = p.y;
+                        let rad = Math.max(2, Math.ceil(Math.sqrt(spawnCount)) * 0.4);
+                        this.sphWater.addCircle(cx, cy, rad, spawnCount);
+                    } else {
+                        for (let i = 0; i < spawnCount; i++) {
+                            let idx = candidates[i];
+                            this.grid[idx] = mat;
+                            this.vx[idx] = 0;
+                            this.vy[idx] = 0;
+                            if (mat === MAT.WATER) this.waterVol[idx] = MAX_WATER;
+                            this.addA(idx); this.wake(idx);
+                        }
                     }
                 }
             }
@@ -288,9 +571,17 @@ class PhysicsEngine {
     update() {
         let tL = this.actL; this.actL = this.nxtL; this.nxtL = tL;
         this.actC = this.nxtC; this.nxtC = 0; this.epc++; this.applyPaints();
-        this.applyBulkFlow();
-        this.applyCohesion();
-        this.equalizePressure();
+        if (this.sphWater) {
+            for (let i = 0; i < 3; i++) this.sphWater.step(1.0 / 180.0);
+            if (this.sphWater.particles.length > 0 && this.actC === 0) {
+                // SPH has particles but grid is empty - still need to render
+                this.dMin = 0; this.dMax = this.H - 1;
+            }
+        } else {
+            this.applyBulkFlow();
+            this.applyCohesion();
+            this.equalizePressure();
+        }
         let u = this.upd, actL = this.actL, actC = this.actC, W = this.W, dMin = this.dMin, dMax = this.dMax;
         for (let i = 0; i < actC; i++) { let idx = actL[i]; u[idx] = 0; let y = (idx / W) | 0; if (y < dMin) dMin = y; if (y > dMax) dMax = y; }
         this.dMin = dMin; this.dMax = dMax;
@@ -378,8 +669,8 @@ class PhysicsEngine {
                 cx = nx; cy = ny; cIdx = nIdx; moved = true;
             } else if (MAT.DENSITY[t] > MAT.DENSITY[nt]) {
                 if ((t === MAT.SAND || t === MAT.WET_SAND) && nt === MAT.WATER) {
-                    if (t === MAT.SAND) { g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; }
-                    else { g[cIdx] = MAT.WATER; g[nIdx] = MAT.WET_SAND; vy[cIdx] = -1.5; }
+                    if (t === MAT.SAND) { g[cIdx] = MAT.EMPTY; this.waterVol[cIdx] = 0; g[nIdx] = MAT.WET_SAND; }
+                    else { g[cIdx] = MAT.WATER; this.waterVol[cIdx] = MAX_WATER; g[nIdx] = MAT.WET_SAND; vy[cIdx] = -1.5; }
                     vx[cIdx] = 0; vy[cIdx] = 0;
                     u[nIdx] = 1; u[cIdx] = 1; this.addA(nIdx); this.addA(cIdx); this.wake(nIdx); this.wake(cIdx);
                     return;
@@ -387,8 +678,31 @@ class PhysicsEngine {
                 g[cIdx] = nt; g[nIdx] = t;
                 let tvx = vx[nIdx], tvy = vy[nIdx];
                 vx[nIdx] = finalVx * 0.5; vy[nIdx] = finalVy * 0.5; vx[cIdx] = tvx * 0.8; vy[cIdx] = tvy * 0.8 - 1.5;
+                if (t === MAT.WATER || nt === MAT.WATER) {
+                    let tv = this.waterVol[cIdx]; this.waterVol[cIdx] = this.waterVol[nIdx]; this.waterVol[nIdx] = tv;
+                }
                 u[nIdx] = 1; u[cIdx] = 1; this.addA(nIdx); this.addA(cIdx); this.wake(nIdx); this.wake(cIdx);
                 return;
+            } else if (nt === MAT.WATER && t === MAT.WATER) {
+                const combined = this.waterVol[cIdx] + this.waterVol[nIdx];
+                if (combined <= MAX_WATER) {
+                    this.waterVol[nIdx] = combined;
+                    this.waterVol[cIdx] = 0;
+                    g[nIdx] = MAT.WATER; g[cIdx] = MAT.EMPTY;
+                    vx[nIdx] = (vx[nIdx] + finalVx) * 0.75;
+                    vy[nIdx] = (vy[nIdx] + finalVy) * 0.75;
+                    finalVx *= 0.25; finalVy *= 0.25;
+                    vx[cIdx] = finalVx; vy[cIdx] = finalVy;
+                    u[nIdx] = 1; u[cIdx] = 1; this.addA(nIdx); this.addA(cIdx); break;
+                } else {
+                    this.waterVol[nIdx] = MAX_WATER;
+                    this.waterVol[cIdx] = combined - MAX_WATER;
+                    vx[nIdx] = (vx[nIdx] + finalVx) * 0.75;
+                    vy[nIdx] = (vy[nIdx] + finalVy) * 0.75;
+                    finalVx *= 0.25; finalVy *= 0.25;
+                    vx[cIdx] = finalVx; vy[cIdx] = finalVy;
+                    u[nIdx] = 1; u[cIdx] = 1; this.addA(nIdx); this.addA(cIdx); break;
+                }
             } else if (nt === t) {
                 if ((ny + 1 < H) && (g[nIdx + W] === MAT.EMPTY)) {
                     if (depth < 4) {
@@ -429,28 +743,8 @@ class PhysicsEngine {
                 }
             } else if (t === MAT.WATER && nt === MAT.SAND) {
                 if (Math.random() < 0.1) {
-                    g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx] = 0; vy[cIdx] = 0;
+                    g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; this.waterVol[cIdx] = 0; vx[cIdx] = 0; vy[cIdx] = 0;
                     u[cIdx] = 1; u[nIdx] = 1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
-                }
-            } else if (nt === MAT.WATER && t === MAT.WATER) {
-                const combined = this.waterVol[cIdx] + this.waterVol[nIdx];
-                if (combined <= MAX_WATER) {
-                    this.waterVol[nIdx] = combined;
-                    this.waterVol[cIdx] = 0;
-                    g[nIdx] = MAT.WATER; g[cIdx] = MAT.EMPTY;
-                    vx[nIdx] = (vx[nIdx] + finalVx) * 0.75;
-                    vy[nIdx] = (vy[nIdx] + finalVy) * 0.75;
-                    finalVx *= 0.25; finalVy *= 0.25;
-                    vx[cIdx] = finalVx; vy[cIdx] = finalVy;
-                    u[nIdx] = 1; u[cIdx] = 1; this.addA(nIdx); this.addA(cIdx); break;
-                } else {
-                    this.waterVol[nIdx] = MAX_WATER;
-                    this.waterVol[cIdx] = combined - MAX_WATER;
-                    vx[nIdx] = (vx[nIdx] + finalVx) * 0.75;
-                    vy[nIdx] = (vy[nIdx] + finalVy) * 0.75;
-                    finalVx *= 0.25; finalVy *= 0.25;
-                    vx[cIdx] = finalVx; vy[cIdx] = finalVy;
-                    u[nIdx] = 1; u[cIdx] = 1; this.addA(nIdx); this.addA(cIdx); break;
                 }
             } else {
                 if (sy > 0) {
@@ -511,6 +805,7 @@ class PhysicsEngine {
                                 let dIdx = cIdx + W + rollDir;
                                 if (g[sIdx] === MAT.EMPTY && g[dIdx] === MAT.EMPTY) {
                                     g[dIdx] = t; g[cIdx] = MAT.EMPTY;
+                                    if (t === MAT.WATER) { this.waterVol[dIdx] = this.waterVol[cIdx]; this.waterVol[cIdx] = 0; }
                                     vx[dIdx] = rollDir * 2.5; vy[dIdx] = 1.0;
                                     u[dIdx] = 1; u[cIdx] = 1; this.addA(dIdx); this.wake(cIdx);
                                     cIdx = dIdx; cx += rollDir; cy++; rMoved = true;
@@ -527,6 +822,7 @@ class PhysicsEngine {
                             if (g[s1] === t && g[d1] === MAT.EMPTY) {
                                 if (Math.random() < 0.05) {
                                     g[s1] = t; g[d1] = t; g[cIdx] = MAT.EMPTY;
+                                    if (t === MAT.WATER) { this.waterVol[d1] = this.waterVol[cIdx]; this.waterVol[cIdx] = 0; }
                                     vx[s1] = 0; vy[s1] = 0;
                                     vx[d1] = dir * 2.5; vy[d1] = 1.5;
                                     vx[cIdx] = 0; vy[cIdx] = 0;
@@ -541,7 +837,9 @@ class PhysicsEngine {
             } else {
                 if (cy + 1 < H && g[cIdx + W] === MAT.EMPTY) {
                     let bIdx = cIdx + W;
-                    g[bIdx] = t; g[cIdx] = MAT.EMPTY; vy[bIdx] = vy[cIdx] + 1.2; vx[bIdx] = vx[cIdx]; vx[cIdx] = 0; vy[cIdx] = 0;
+                    g[bIdx] = t; g[cIdx] = MAT.EMPTY;
+                    if (t === MAT.WATER) { this.waterVol[bIdx] = this.waterVol[cIdx]; this.waterVol[cIdx] = 0; }
+                    vy[bIdx] = vy[cIdx] + 1.2; vx[bIdx] = vx[cIdx]; vx[cIdx] = 0; vy[cIdx] = 0;
                     u[bIdx] = 1; u[cIdx] = 1; this.addA(bIdx); this.wake(cIdx); cIdx = bIdx; cy++; rMoved = true;
                 }
                 if (!rMoved) {
@@ -554,16 +852,16 @@ class PhysicsEngine {
 
                         if (Math.random() < 0.1 && touchingSand) {
                             if (cy + 1 < H && g[cIdx + W] === MAT.SAND) {
-                                let nIdx = cIdx + W; g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx] = 0; vy[cIdx] = 0; u[cIdx] = 1; u[nIdx] = 1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
+                                let nIdx = cIdx + W; g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; this.waterVol[cIdx] = 0; vx[cIdx] = 0; vy[cIdx] = 0; u[cIdx] = 1; u[nIdx] = 1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
                             }
                             if (cx + 1 < W && g[cIdx + 1] === MAT.SAND) {
-                                let nIdx = cIdx + 1; g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx] = 0; vy[cIdx] = 0; u[cIdx] = 1; u[nIdx] = 1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
+                                let nIdx = cIdx + 1; g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; this.waterVol[cIdx] = 0; vx[cIdx] = 0; vy[cIdx] = 0; u[cIdx] = 1; u[nIdx] = 1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
                             }
                             if (cx > 0 && g[cIdx - 1] === MAT.SAND) {
-                                let nIdx = cIdx - 1; g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx] = 0; vy[cIdx] = 0; u[cIdx] = 1; u[nIdx] = 1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
+                                let nIdx = cIdx - 1; g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; this.waterVol[cIdx] = 0; vx[cIdx] = 0; vy[cIdx] = 0; u[cIdx] = 1; u[nIdx] = 1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
                             }
                             if (cy > 0 && g[cIdx - W] === MAT.SAND) {
-                                let nIdx = cIdx - W; g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx] = 0; vy[cIdx] = 0; u[cIdx] = 1; u[nIdx] = 1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
+                                let nIdx = cIdx - W; g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; this.waterVol[cIdx] = 0; vx[cIdx] = 0; vy[cIdx] = 0; u[cIdx] = 1; u[nIdx] = 1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
                             }
                         }
 
@@ -588,7 +886,7 @@ class PhysicsEngine {
                                     let soakChance = Math.pow(1.0 - progress, 3);
 
                                     if (Math.random() < soakChance) {
-                                        g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; vx[cIdx] = 0; vy[cIdx] = 0;
+                                        g[cIdx] = MAT.EMPTY; g[nIdx] = MAT.WET_SAND; this.waterVol[cIdx] = 0; vx[cIdx] = 0; vy[cIdx] = 0;
                                         u[cIdx] = 1; u[nIdx] = 1; this.addA(cIdx); this.addA(nIdx); this.wake(cIdx); this.wake(nIdx); return;
                                     } else {
                                         break;
@@ -618,6 +916,7 @@ class PhysicsEngine {
                             let dist = dir === -1 ? lE : rE;
                             let targetX = cx + (dir * dist), targetIdx = cy * W + targetX;
                             g[targetIdx] = MAT.WATER; g[cIdx] = MAT.EMPTY;
+                            this.waterVol[targetIdx] = this.waterVol[cIdx]; this.waterVol[cIdx] = 0;
                             let isDown = (dir == -1 && lD) || (dir == 1 && rD);
                             let speed = isDown ? 18.0 : 10.0;
                             vx[targetIdx] = dir * speed; vy[targetIdx] = isDown ? 5.0 : 0;
@@ -659,31 +958,39 @@ const TPS = 60, TMS = 1000 / TPS;
 let counts = new Int32Array(4);
 
 function tick() {
-    let now = performance.now();
-    if (lastT === 0) { lastT = now; lastTps = now; }
-    let d = now - lastT; lastT = now; acc += d;
-    let t = 0;
-    while (acc >= TMS && t < 2) { engine.update(); acc -= TMS; t++; tpsC++; }
-    if (acc > TMS * 2) acc = 0;
-    if (now - lastTps >= 1000) { cTps = tpsC; tpsC = 0; lastTps = now; }
-    if (now - lastStats >= 500) {
-        lastStats = now;
-        counts.fill(0);
-        let g = engine.grid, len = g.length;
-        for (let i = 0; i < len; i++) counts[g[i]]++;
-        self.postMessage({ type: 'stats', aC: engine.actC, tps: cTps, counts: counts });
-    }
-    if (engine.dMax >= engine.dMin && engine.dMax >= 0) {
-        let W = engine.W, H = engine.H;
-        let y0 = engine.dMin < 0 ? 0 : engine.dMin;
-        let y1 = engine.dMax >= H ? H - 1 : engine.dMax;
-        let start = y0 * W, n = (y1 - y0 + 1) * W;
-        let out = new Uint8Array(n);
-        out.set(engine.grid.subarray(start, start + n));
-        let volOut = new Uint8Array(n);
-        volOut.set(engine.waterVol.subarray(start, start + n));
-        self.postMessage({ type: 'render', buf: out.buffer, volBuf: volOut.buffer, y0: y0, rows: y1 - y0 + 1 }, [out.buffer, volOut.buffer]);
-        engine.dMin = H; engine.dMax = -1;
+    try {
+        let now = performance.now();
+        if (lastT === 0) { lastT = now; lastTps = now; }
+        let d = now - lastT; lastT = now; acc += d;
+        let t = 0;
+        while (acc >= TMS && t < 2) { engine.update(); acc -= TMS; t++; tpsC++; }
+        if (acc > TMS * 2) acc = 0;
+        if (now - lastTps >= 1000) { cTps = tpsC; tpsC = 0; lastTps = now; }
+        if (now - lastStats >= 500) {
+            lastStats = now;
+            counts.fill(0);
+            let g = engine.grid, len = g.length;
+            for (let i = 0; i < len; i++) counts[g[i]]++;
+            self.postMessage({ type: 'stats', aC: engine.actC, tps: cTps, counts: counts });
+        }
+        if (engine.dMax >= engine.dMin && engine.dMax >= 0) {
+            let W = engine.W, H = engine.H;
+            let y0 = engine.dMin < 0 ? 0 : engine.dMin;
+            let y1 = engine.dMax >= H ? H - 1 : engine.dMax;
+            let start = y0 * W, n = (y1 - y0 + 1) * W;
+            let out = new Uint8Array(n);
+            out.set(engine.grid.subarray(start, start + n));
+            let volOut = new Uint8Array(n);
+            volOut.set(engine.waterVol.subarray(start, start + n));
+            let sphData = null;
+            if (engine.sphWater) {
+                sphData = engine.sphWater.getParticleData();
+            }
+            self.postMessage({ type: 'render', buf: out.buffer, volBuf: volOut.buffer, y0: y0, rows: y1 - y0 + 1, sph: sphData }, [out.buffer, volOut.buffer]);
+            engine.dMin = H; engine.dMax = -1;
+        }
+    } catch (e) {
+        self.postMessage({ type: 'error', message: e.message, stack: e.stack });
     }
     let wait = Math.max(0, TMS - acc);
     setTimeout(tick, wait);
