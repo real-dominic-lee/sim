@@ -502,17 +502,16 @@ class PhysicsEngine {
                 const avgVol = totalVol / (neighbors.length + 1);
                 if (vol > avgVol + 0.5) {
                     let give = Math.min(vol - 1, (vol - avgVol) * 0.4);
-                    let cap = 0;
-                    for (const ni of neighbors) cap += MAX_WATER - wv[ni];
-                    give = Math.min(give, cap);
-                    wv[i] -= give;
-                    const perNeighbor = give / neighbors.length;
+                    let remaining = give;
                     for (const ni of neighbors) {
-                        if (wv[ni] < MAX_WATER) {
-                            const take = Math.min(perNeighbor, MAX_WATER - wv[ni]);
+                        const free = MAX_WATER - wv[ni];
+                        if (free > 0) {
+                            const take = Math.min(remaining, free);
                             wv[ni] += take;
+                            remaining -= take;
                         }
                     }
+                    wv[i] -= give - remaining;
                     vx[i] *= 0.5; vy[i] *= 0.5;
                 }
             }
@@ -548,7 +547,7 @@ class PhysicsEngine {
                         let temp = candidates[i]; candidates[i] = candidates[j]; candidates[j] = temp;
                     }
 
-                    let spawnCount = Math.min(s * 1.5, candidates.length);
+                    let spawnCount = Math.min(s * 7.5, candidates.length);
                     if (mat === MAT.WATER && this.sphWater) {
                         let cx = p.x, cy = p.y;
                         let rad = Math.max(2, Math.ceil(Math.sqrt(spawnCount)) * 0.4);
